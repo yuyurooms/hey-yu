@@ -5,23 +5,51 @@ import { bfsFromNode } from 'graphology-traversal';
 import { ResolverFactory } from 'oxc-resolver';
 import { availableLanguages } from '@lumis-sh/lumis';
 
-function createModuleResolver(projectRoot) {
+function createModuleResolverPool(projectRoot) {
   const root = pathe.resolve(projectRoot);
   const extensions = [
-    ...new Set(
-      Object.values(availableLanguages())
+    ...new Set([
+      ...Object.values(availableLanguages())
         .flatMap(lang => lang.extensions || [])
         .filter(ext => ext.startsWith('*.'))
-        .map(ext => ext.slice(1))
-    )
+        .map(ext => ext.slice(1)),
+      '.json',
+      '.css',
+      '.scss',
+      '.sass',
+      '.less',
+      '.svg'
+    ])
   ];
 
-  const options = { extensions };
-  const tsconfigPath = pathe.join(root, 'tsconfig.json');
-  if (fs.existsSync(tsconfigPath)) {
-    options.tsconfig = { configFile: tsconfigPath, references: 'auto' };
+  const cache = new Map();
+
+  function getResolverForConfig(tsconfigPath) {
+    const key = tsconfigPath || '__default__';
+    if (!cache.has(key)) {
+      const options = { extensions };
+      if (tsconfigPath && fs.existsSync(tsconfigPath)) {
+        options.tsconfig = { configFile: tsconfigPath, references: 'auto' };
+      }
+      cache.set(key, new ResolverFactory(options));
+    }
+    return cache.get(key);
   }
-  return new ResolverFactory(options);
+
+  return function getResolverForFile(fromRelPath) {
+    let curr = pathe.dirname(pathe.join(root, fromRelPath || ''));
+    while (curr && (curr === root || curr.startsWith(`${root}/`))) {
+      const candidateTs = pathe.join(curr, 'tsconfig.json');
+      if (fs.existsSync(candidateTs)) {
+        return getResolverForConfig(candidateTs);
+      }
+      const parent = pathe.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+    const rootTs = pathe.join(root, 'tsconfig.json');
+    return getResolverForConfig(fs.existsSync(rootTs) ? rootTs : null);
+  };
 }
 
 function stripExt(relPath) {
@@ -115,7 +143,7 @@ function doesRawImportExistOnDisk(resolver, projectRoot, fromRelPath, rawSpecifi
 export function buildCoordinateGraph(projectRoot, indexedFiles) {
   const root = pathe.resolve(projectRoot);
   const graph = new DirectedGraph({ multi: true });
-  const resolver = createModuleResolver(root);
+  const getResolverForFile = createModuleResolverPool(root);
 
   const nodesById = new Map();
   const fileByRelPath = new Map();
@@ -175,9 +203,10 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
     const importedTargetFiles = new Set();
     const sameDirFiles = filesByDir.get(pathe.dirname(fileNode.origin_file)) || [];
 
+    const fileResolver = getResolverForFile(fileNode.origin_file);
     for (const imp of fileNode.imports || []) {
       const targetRels = resolveImportTargetRelPaths(
-        resolver,
+        fileResolver,
         root,
         fileNode.origin_file,
         imp.from,
@@ -188,7 +217,7 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
       if (
         targetRels.length === 0 &&
         isLocalOrAliasImport(imp.from) &&
-        !doesRawImportExistOnDisk(resolver, root, fileNode.origin_file, imp.from)
+        !doesRawImportExistOnDisk(fileResolver, root, fileNode.origin_file, imp.from)
       ) {
         const symPart = imp.symbols && imp.symbols.length > 0 ? ` (${imp.symbols.join(', ')})` : '';
         const entryStr = `${fileNode.origin_file}:${imp.line} -> ${imp.from}${symPart}`;

@@ -266,7 +266,16 @@ export class CoordinateResolver {
 
     if (file) {
       const relFile = pathe.isAbsolute(file) ? pathe.relative(this.projectRoot, file) : pathe.normalize(file);
-      const fileNode = this.graphState.fileByRelPath.get(relFile);
+      const cleanRel = relFile.replace(/^\.\//, '');
+      let fileNode = this.graphState.fileByRelPath.get(cleanRel);
+      if (!fileNode) {
+        for (const [indexedRel, candidateNode] of this.graphState.fileByRelPath.entries()) {
+          if (indexedRel === cleanRel || indexedRel.endsWith(`/${cleanRel}`)) {
+            fileNode = candidateNode;
+            break;
+          }
+        }
+      }
       if (!fileNode) {
         return { pass: true, resolution_status: 'PASS' };
       }

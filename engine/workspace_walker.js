@@ -33,12 +33,38 @@ export async function resolveAstLanguagePackage(langId) {
   return resolved;
 }
 
+const DEFAULT_IGNORE_PATTERNS = [
+  '.git/',
+  'node_modules/',
+  '.coordinate/',
+  '.hey-yu/',
+  '.agents/',
+  '.claude/',
+  '.cursor/',
+  '.windsurf/',
+  '.next/',
+  '.nuxt/',
+  '.svelte-kit/',
+  '.turbo/',
+  '.vercel/',
+  'dist/',
+  'build/',
+  'out/',
+  'coverage/',
+  '__pycache__/',
+  '.pytest_cache/',
+  '.venv/',
+  'venv/',
+  'target/',
+  '*.min.*'
+];
+
 /**
  * Creates a .gitignore-backed matcher using the `ignore` partner library.
  */
 export function createWorkspaceIgnore(projectRoot) {
   const root = pathe.resolve(projectRoot);
-  const ig = ignore().add(['.git/', 'node_modules/', '.coordinate/', '.hey-yu/', '*.min.*']);
+  const ig = ignore().add(DEFAULT_IGNORE_PATTERNS);
   const gitignorePath = pathe.join(root, '.gitignore');
   if (fs.existsSync(gitignorePath)) {
     ig.add(fs.readFileSync(gitignorePath, 'utf8'));

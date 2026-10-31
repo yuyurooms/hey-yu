@@ -37,16 +37,37 @@ const MARKER_START = '<!-- hey-yu-COORDINATE-OF-CODE:START -->';
 const MARKER_END = '<!-- hey-yu-COORDINATE-OF-CODE:END -->';
 
 const HeyYuArgsSchema = z.object({
-  query: z.string().optional(),
-  semantic_tokens: z.array(z.string()).optional(),
-  expected_kind: z.string().optional(),
-  file: z.string().optional(),
-  line: z.number().optional(),
-  project_root: z.string().optional()
+  query: z
+    .string()
+    .optional()
+    .describe('Natural-language intent, symbol name (function/class/method/type), error message, or UI string to locate.'),
+  semantic_tokens: z
+    .array(z.string())
+    .optional()
+    .describe('Optional English or domain identifier tokens inferred by the LLM to boost AST matching.'),
+  expected_kind: z
+    .string()
+    .optional()
+    .describe('Optional symbol kind filter: "function" | "method" | "type" | "file".'),
+  file: z
+    .string()
+    .optional()
+    .describe('Optional file path (absolute or workspace-relative) for direct file/line coordinate lookup.'),
+  line: z
+    .number()
+    .optional()
+    .describe('Optional 1-based line number within `file` to resolve the enclosing AST symbol.'),
+  project_root: z
+    .string()
+    .optional()
+    .describe('Optional absolute path to the target project/workspace root directory. Auto-discovered if omitted.')
 });
 
 const ProjectMapArgsSchema = z.object({
-  project_root: z.string().optional()
+  project_root: z
+    .string()
+    .optional()
+    .describe('Optional absolute path to the target project/workspace root directory. Auto-discovered if omitted.')
 });
 
 const TOOLS = [
@@ -82,6 +103,85 @@ const defaultProjectRoot = pathe.resolve(
     process.env.HEY_YU_PROJECT_ROOT ||
     process.cwd()
 );
+
+const ACTIVE_WORKSPACE_STATE_PATH = pathe.join(os.homedir(), '.gemini', 'hey-yu-active-workspace.json');
+
+function recordActiveWorkspace(rootPath) {
+  if (!rootPath || process.env.HEY_YU_SKIP_GLOBAL_MCP === '1') return;
+  try {
+    const resolved = pathe.resolve(rootPath);
+    if (resolved.startsWith(os.tmpdir()) || resolved.startsWith('/tmp/') || resolved.startsWith('/private/var/folders/')) {
+      return;
+    }
+    fs.mkdirSync(pathe.dirname(ACTIVE_WORKSPACE_STATE_PATH), { recursive: true });
+    fs.writeFileSync(
+      ACTIVE_WORKSPACE_STATE_PATH,
+      `${JSON.stringify({ active_project_root: resolved, updated_at: new Date().toISOString() }, null, 2)}\n`,
+      'utf8'
+    );
+  } catch (_) {}
+}
+
+function findWorkspaceRootFromPath(startPath) {
+  if (!startPath) return null;
+  try {
+    const home = pathe.resolve(os.homedir());
+    let curr = pathe.resolve(startPath);
+    if (fs.existsSync(curr) && !fs.statSync(curr).isDirectory()) {
+      curr = pathe.dirname(curr);
+    }
+    let fallbackPkgRoot = null;
+    while (curr && curr !== '/' && curr !== home) {
+      if (
+        fs.existsSync(pathe.join(curr, '.hey-yu')) ||
+        fs.existsSync(pathe.join(curr, '.coordinate')) ||
+        fs.existsSync(pathe.join(curr, '.agents', 'rules', 'hey-yu-rule.md'))
+      ) {
+        return curr;
+      }
+      if (
+        !fallbackPkgRoot &&
+        (fs.existsSync(pathe.join(curr, 'package.json')) ||
+          fs.existsSync(pathe.join(curr, 'Cargo.toml')) ||
+          fs.existsSync(pathe.join(curr, 'go.mod')) ||
+          fs.existsSync(pathe.join(curr, 'pyproject.toml')))
+      ) {
+        fallbackPkgRoot = curr;
+      }
+      const parent = pathe.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+    return fallbackPkgRoot;
+  } catch (_) {
+    return null;
+  }
+}
+
+function resolveEffectiveProjectRoot(rawArgs = {}) {
+  if (typeof rawArgs?.project_root === 'string' && rawArgs.project_root.trim()) {
+    const explicitRoot = pathe.resolve(rawArgs.project_root.trim());
+    if (fs.existsSync(explicitRoot)) {
+      recordActiveWorkspace(explicitRoot);
+      return explicitRoot;
+    }
+  }
+  if (typeof rawArgs?.file === 'string' && pathe.isAbsolute(rawArgs.file.trim())) {
+    const inferredFromFile = findWorkspaceRootFromPath(rawArgs.file.trim());
+    if (inferredFromFile && fs.existsSync(inferredFromFile)) {
+      return inferredFromFile;
+    }
+  }
+  try {
+    if (fs.existsSync(ACTIVE_WORKSPACE_STATE_PATH)) {
+      const state = JSON.parse(fs.readFileSync(ACTIVE_WORKSPACE_STATE_PATH, 'utf8'));
+      if (state?.active_project_root && fs.existsSync(state.active_project_root)) {
+        return pathe.resolve(state.active_project_root);
+      }
+    }
+  } catch (_) {}
+  return defaultProjectRoot;
+}
 
 const resolversByRoot = new Map();
 
@@ -176,7 +276,8 @@ export async function handleRpcMessage(msg) {
       if (!parsed.success) {
         throw new Error(`Invalid hey_yu arguments: ${parsed.error.message}`);
       }
-      const resolver = await getResolver(parsed.data.project_root);
+      const effectiveRoot = resolveEffectiveProjectRoot(parsed.data);
+      const resolver = await getResolver(effectiveRoot);
       const result = await resolver.resolve(parsed.data);
       recordTelemetry(resolver.projectRoot, 'hey_yu', parsed.data, result);
       return {
@@ -189,7 +290,8 @@ export async function handleRpcMessage(msg) {
       if (!parsed.success) {
         throw new Error(`Invalid yu_get_project_map arguments: ${parsed.error.message}`);
       }
-      const resolver = await getResolver(parsed.data.project_root);
+      const effectiveRoot = resolveEffectiveProjectRoot(parsed.data);
+      const resolver = await getResolver(effectiveRoot);
       const mapResult = await resolver.getProjectMap();
       recordTelemetry(resolver.projectRoot, 'yu_get_project_map', parsed.data, mapResult);
       return {
@@ -231,11 +333,12 @@ This repository is indexed with **hey-yu (Coordinate of Code v0.1.0-alpha)**. Ev
    {
      "query": "<natural-language intent, symbol name, error string, or UI label>",
      "semantic_tokens": ["<optional English/code domain tokens inferred by LLM>"],
-     "expected_kind": "function"
+     "expected_kind": "function",
+     "project_root": "<optional absolute path to current workspace root; auto-discovered if omitted>"
    }
    \`\`\`
    Supported \`expected_kind\` values: \`"function" | "method" | "type" | "file"\`.
-   *(Note: \`call_mcp_tool\` with \`ServerName: "hey-yu"\` is active immediately via \`mcp_config.json\` even if installed mid-session without restarting the IDE; you already have the full argument schema above and do not need to read a schema file first.)*
+   *(Note: \`call_mcp_tool\` with \`ServerName: "hey-yu"\` is active immediately via \`mcp_config.json\` across all chats and folders; passing \`project_root\` or an absolute \`file\` path targets any workspace on the machine.)*
    Or spatial lookup by file and line:
    \`\`\`json
    { "file": "src/billing/invoice.rs", "line": 42 }
@@ -302,7 +405,8 @@ description: Universal polyglot AST spatial coordinate dispatcher (Coordinate of
    {
      "query": "<intent, symbol name, error message, or UI string>",
      "semantic_tokens": ["<optional English/code domain tokens>"],
-     "expected_kind": "function"
+     "expected_kind": "function",
+     "project_root": "<optional absolute path to current workspace root; auto-discovered if omitted>"
    }
    \`\`\`
    Supported \`expected_kind\`: \`"function" | "method" | "type" | "file"\`.
@@ -332,15 +436,6 @@ function parseShellSearchCommand(cmdText) {
   );
 
   if (bin === 'find' || bin === 'fd') {
-    for (let i = 0; i < tokens.length; i++) {
-      const tok = tokens[i];
-      if ((tok === '-name' || tok === '-iname' || tok === '-path' || tok === '-regex') && tokens[i + 1]) {
-        const cleaned = tokens[i + 1].replace(/^[*?.\/]+|[*?.\/]+$/g, '').replace(/\.[a-z0-9]+$/i, '');
-        if (cleaned && cleaned.length >= 2) {
-          return { kind: 'query', query: cleaned };
-        }
-      }
-    }
     return { kind: 'map' };
   }
 
@@ -443,6 +538,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
   const root = pathe.resolve(
     projectRoot || (Array.isArray(payload?.workspacePaths) && payload.workspacePaths[0]) || defaultProjectRoot
   );
+  recordActiveWorkspace(root);
   const coordDir = pathe.join(root, '.coordinate');
   const telemetryPath = pathe.join(coordDir, 'mcp_telemetry.jsonl');
   const hookTelemetryPath = pathe.join(coordDir, 'hook_telemetry.jsonl');
@@ -568,8 +664,24 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
       }
     }
 
+    const wasMapRecentlyDispatched = () => {
+      try {
+        if (!fs.existsSync(hookTelemetryPath)) return false;
+        const lines = fs.readFileSync(hookTelemetryPath, 'utf8').trim().split('\n').filter(Boolean);
+        for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
+          const entry = JSON.parse(lines[i]);
+          if (entry.action === 'auto_dispatch_coordinates' && !entry.resolved_cadastral_id) {
+            if (Date.now() - new Date(entry.timestamp).getTime() < 60000) {
+              return true;
+            }
+          }
+        }
+      } catch (_) {}
+      return false;
+    };
+
     // Gate 4: Directory listing or shell search auto-resolution
-    if (!autoDispatchMsg && toolName === 'list_dir') {
+    if (!autoDispatchMsg && toolName === 'list_dir' && !wasMapRecentlyDispatched()) {
       const resolver = await getResolver(root);
       const mapResult = await resolver.getProjectMap();
       if (mapResult.total_coordinates > 0) {
@@ -586,7 +698,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
           autoDispatchMsg = formatAutoDispatchContext(result, toolName);
           resolvedId = result.cadastral_id;
         }
-      } else if (parsedShell?.kind === 'map') {
+      } else if (parsedShell?.kind === 'map' && !wasMapRecentlyDispatched()) {
         const resolver = await getResolver(root);
         const mapResult = await resolver.getProjectMap();
         if (mapResult.total_coordinates > 0) {
@@ -695,6 +807,7 @@ function findAncestorAgentWorkspaces(targetRoot) {
 
 export function provisionWorkspace(targetRoot = defaultProjectRoot) {
   const root = pathe.resolve(targetRoot);
+  recordActiveWorkspace(root);
   const nodeBin = process.execPath || 'node';
   const serverEntry = {
     command: nodeBin,
@@ -708,8 +821,7 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
     pathe.join(root, '.mcp.json'),
     pathe.join(root, '.cursor', 'mcp.json'),
     pathe.join(root, '.claude', 'config.json'),
-    pathe.join(root, '.windsurf', 'mcp_config.json'),
-    pathe.join(root, '.agents', 'plugins', 'hey-yu', 'mcp_config.json')
+    pathe.join(root, '.windsurf', 'mcp_config.json')
   ];
 
   const updatedFiles = [];
@@ -732,14 +844,13 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
     updatedFiles.push(mcpPath);
   }
 
-  const agyPluginManifestPath = pathe.join(root, '.agents', 'plugins', 'hey-yu', 'plugin.json');
-  fs.mkdirSync(pathe.dirname(agyPluginManifestPath), { recursive: true });
-  fs.writeFileSync(
-    agyPluginManifestPath,
-    `${JSON.stringify({ name: 'hey-yu' }, null, 2)}\n`,
-    'utf8'
-  );
-  updatedFiles.push(agyPluginManifestPath);
+  // Remove legacy local plugin MCP config so Antigravity does not create mangled hey-yu_hey-yu server names
+  const legacyPluginDir = pathe.join(root, '.agents', 'plugins', 'hey-yu');
+  if (fs.existsSync(legacyPluginDir)) {
+    try {
+      fs.rmSync(legacyPluginDir, { recursive: true, force: true });
+    } catch (_) {}
+  }
 
   const docTargets = [
     { path: pathe.join(root, 'AGENTS.md'), title: 'AGENTS.md — Coordinate of Code (hey-yu) Protocol' },
@@ -811,9 +922,12 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
 
   upsertHooksFile(pathe.join(root, '.agents', 'hooks.json'));
 
+  let globalMcpStatus = 'SKIPPED';
   if (process.env.HEY_YU_SKIP_GLOBAL_MCP !== '1') {
     const geminiHome = pathe.join(os.homedir(), '.gemini');
     const globalConfigDir = pathe.join(geminiHome, 'config');
+    let wroteAnyGlobal = false;
+    let hitPermissionError = false;
     if (fs.existsSync(geminiHome)) {
       try {
         fs.mkdirSync(globalConfigDir, { recursive: true });
@@ -825,21 +939,28 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
         ];
         for (const globalAgyMcpPath of globalMcpTargets) {
           if (!fs.existsSync(pathe.dirname(globalAgyMcpPath))) continue;
-          let globalMcp = {};
-          if (fs.existsSync(globalAgyMcpPath)) {
-            try {
-              globalMcp = JSON.parse(fs.readFileSync(globalAgyMcpPath, 'utf8'));
-            } catch (_) {
-              globalMcp = {};
+          try {
+            let globalMcp = {};
+            if (fs.existsSync(globalAgyMcpPath)) {
+              try {
+                globalMcp = JSON.parse(fs.readFileSync(globalAgyMcpPath, 'utf8'));
+              } catch (_) {
+                globalMcp = {};
+              }
+            }
+            if (!globalMcp.mcpServers || typeof globalMcp.mcpServers !== 'object') {
+              globalMcp.mcpServers = {};
+            }
+            globalMcp.mcpServers['coordinate-of-code'] = serverEntry;
+            globalMcp.mcpServers['hey-yu'] = serverEntry;
+            fs.writeFileSync(globalAgyMcpPath, `${JSON.stringify(globalMcp, null, 2)}\n`, 'utf8');
+            updatedFiles.push(globalAgyMcpPath);
+            wroteAnyGlobal = true;
+          } catch (err) {
+            if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
+              hitPermissionError = true;
             }
           }
-          if (!globalMcp.mcpServers || typeof globalMcp.mcpServers !== 'object') {
-            globalMcp.mcpServers = {};
-          }
-          globalMcp.mcpServers['coordinate-of-code'] = serverEntry;
-          globalMcp.mcpServers['hey-yu'] = serverEntry;
-          fs.writeFileSync(globalAgyMcpPath, `${JSON.stringify(globalMcp, null, 2)}\n`, 'utf8');
-          updatedFiles.push(globalAgyMcpPath);
         }
 
         const globalRulePath = pathe.join(globalConfigDir, 'rules', 'hey-yu-rule.md');
@@ -877,6 +998,14 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
         };
         for (const baseDir of mcpSchemaBases) {
           if (!fs.existsSync(pathe.dirname(baseDir))) continue;
+          for (const legacyMangled of ['hey-yu_hey-yu', 'hey-yu_coordinate-of-code']) {
+            const mangledDir = pathe.join(baseDir, legacyMangled);
+            if (fs.existsSync(mangledDir)) {
+              try {
+                fs.rmSync(mangledDir, { recursive: true, force: true });
+              } catch (_) {}
+            }
+          }
           for (const srv of ['hey-yu', 'coordinate-of-code']) {
             const srvDir = pathe.join(baseDir, srv);
             fs.mkdirSync(srvDir, { recursive: true });
@@ -889,8 +1018,17 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
             fs.writeFileSync(pathe.join(srvDir, 'instructions.md'), skillContent, 'utf8');
           }
         }
-      } catch (_) {}
+      } catch (err) {
+        if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
+          hitPermissionError = true;
+        }
+      }
     }
+    globalMcpStatus = hitPermissionError
+      ? 'SANDBOX_BLOCKED_RUN_WITH_BYPASS_SANDBOX'
+      : wroteAnyGlobal
+        ? 'REGISTERED_GLOBAL_MCP'
+        : 'NO_GEMINI_DIR';
 
     for (const ancestorRoot of findAncestorAgentWorkspaces(root)) {
       try {
@@ -935,13 +1073,16 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
     recycleRunningMcpDaemons();
   }
 
-  return { root, updatedFiles };
+  return { root, updatedFiles, globalMcpStatus };
 }
 
 function recycleRunningMcpDaemons() {
   if (process.platform === 'win32') return;
   try {
-    const out = execFileSync('pgrep', ['-f', 'hey_yu_mcp\\.js|mcp_server\\.js'], { encoding: 'utf8' });
+    const out = execFileSync('pgrep', ['-f', 'hey_yu_mcp\\.js|mcp_server\\.js'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
     for (const line of out.split('\n')) {
       const pid = Number(line.trim());
       if (pid && pid !== process.pid && pid !== process.ppid) {
@@ -1082,7 +1223,17 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
     } catch (_) {}
   }
 
-  for (const dirName of ['.claude', '.cursor', '.windsurf']) {
+  for (const dirName of [
+    '.agents/rules',
+    '.agents/skills',
+    '.agents/plugins',
+    '.agents',
+    '.cursor/rules',
+    '.cursor',
+    '.claude',
+    '.windsurf',
+    '.vscode'
+  ]) {
     const dirPath = pathe.join(root, dirName);
     try {
       if (fs.existsSync(dirPath) && fs.readdirSync(dirPath).length === 0) {
@@ -1120,22 +1271,31 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
     stripMarkersFromFile(pathe.join(geminiHome, 'GEMINI.md'), false);
 
     const globalRemovePaths = [
+      ACTIVE_WORKSPACE_STATE_PATH,
       pathe.join(globalConfigDir, 'rules', 'hey-yu-rule.md'),
       pathe.join(globalConfigDir, 'skills', 'hey-yu'),
       pathe.join(globalConfigDir, 'mcp', 'hey-yu'),
       pathe.join(globalConfigDir, 'mcp', 'coordinate-of-code'),
+      pathe.join(globalConfigDir, 'mcp', 'hey-yu_hey-yu'),
+      pathe.join(globalConfigDir, 'mcp', 'hey-yu_coordinate-of-code'),
       pathe.join(globalConfigDir, 'mcp', 'yu'),
       pathe.join(globalConfigDir, 'mcp', 'hey-yu-mcp-server'),
       pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'hey-yu'),
       pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'coordinate-of-code'),
+      pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'hey-yu_hey-yu'),
+      pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'hey-yu_coordinate-of-code'),
       pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'yu'),
       pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'hey-yu-mcp-server'),
       pathe.join(geminiHome, 'antigravity', 'mcp', 'hey-yu'),
       pathe.join(geminiHome, 'antigravity', 'mcp', 'coordinate-of-code'),
+      pathe.join(geminiHome, 'antigravity', 'mcp', 'hey-yu_hey-yu'),
+      pathe.join(geminiHome, 'antigravity', 'mcp', 'hey-yu_coordinate-of-code'),
       pathe.join(geminiHome, 'antigravity', 'mcp', 'yu'),
       pathe.join(geminiHome, 'antigravity', 'mcp', 'hey-yu-mcp-server'),
       pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'hey-yu'),
       pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'coordinate-of-code'),
+      pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'hey-yu_hey-yu'),
+      pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'hey-yu_coordinate-of-code'),
       pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'yu'),
       pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'hey-yu-mcp-server')
     ];
@@ -1320,7 +1480,16 @@ if (invokedScriptPath === __filename) {
     const targetDir = positionals[1] ? pathe.resolve(positionals[1]) : defaultProjectRoot;
     const res = provisionWorkspace(targetDir);
     process.stdout.write(
-      `${JSON.stringify({ status: 'PROVISIONED', root: res.root, updated_files: res.updatedFiles.length }, null, 2)}\n`
+      `${JSON.stringify(
+        {
+          status: 'PROVISIONED',
+          root: res.root,
+          updated_files: res.updatedFiles.length,
+          global_mcp_status: res.globalMcpStatus
+        },
+        null,
+        2
+      )}\n`
     );
     process.exit(0);
   }

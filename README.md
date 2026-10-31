@@ -130,7 +130,7 @@ Open your AI agent **inside the project folder you want to work on** and send th
 
 > Install `hey-yu` (Coordinate of Code) locally into this project workspace by running:
 > 1. If `./.hey-yu` does not exist, run: **`git clone https://github.com/yuyurooms/hey-yu.git ./.hey-yu && npm --prefix ./.hey-yu install`**
-> 2. Run: **`node ./.hey-yu/engine/hey_yu_mcp.js init .`**
+> 2. Run: **`node ./.hey-yu/engine/hey_yu_mcp.js init .`** (if your tool uses a sandbox, run with `BypassSandbox: true` so global `~/.gemini/*/mcp_config.json` registration succeeds).
 > 3. Run: **`node ./.hey-yu/engine/hey_yu_mcp.js self-test`** and confirm that all 10 checks pass.
 
 ### Option B: Run from your terminal
