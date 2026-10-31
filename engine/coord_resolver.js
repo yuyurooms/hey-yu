@@ -156,6 +156,10 @@ export class CoordinateResolver {
     try {
       const coordDir = pathe.dirname(this.cacheFilePath);
       fs.mkdirSync(coordDir, { recursive: true });
+      const coordGitignore = pathe.join(coordDir, '.gitignore');
+      if (!fs.existsSync(coordGitignore)) {
+        fs.writeFileSync(coordGitignore, '*\n', 'utf8');
+      }
       const entries = {};
       for (const [relPath, item] of this.indexedFileMap.entries()) {
         entries[relPath] = item;

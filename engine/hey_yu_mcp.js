@@ -17,7 +17,7 @@ const ENGINE_FILES = [
   'hey_yu_mcp.js',
   'coord_resolver.js',
   'coord_graph.js',
-  'coord_indexer.js',
+  'cst_indexer.js',
   'workspace_walker.js'
 ];
 
@@ -99,6 +99,10 @@ function recordTelemetry(projectRoot, toolName, payload, result) {
   try {
     const coordDir = pathe.join(projectRoot, '.coordinate');
     fs.mkdirSync(coordDir, { recursive: true });
+    const coordGitignore = pathe.join(coordDir, '.gitignore');
+    if (!fs.existsSync(coordGitignore)) {
+      fs.writeFileSync(coordGitignore, '*\n', 'utf8');
+    }
     const ts = new Date().toISOString();
     const logPath = pathe.join(coordDir, 'mcp_telemetry.jsonl');
     const liveLogPath = pathe.join(coordDir, 'live_audit.log');
@@ -813,22 +817,30 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
     if (fs.existsSync(geminiHome)) {
       try {
         fs.mkdirSync(globalConfigDir, { recursive: true });
-        const globalAgyMcpPath = pathe.join(globalConfigDir, 'mcp_config.json');
-        let globalMcp = {};
-        if (fs.existsSync(globalAgyMcpPath)) {
-          try {
-            globalMcp = JSON.parse(fs.readFileSync(globalAgyMcpPath, 'utf8'));
-          } catch (_) {
-            globalMcp = {};
+        const globalMcpTargets = [
+          pathe.join(globalConfigDir, 'mcp_config.json'),
+          pathe.join(geminiHome, 'antigravity', 'mcp_config.json'),
+          pathe.join(geminiHome, 'antigravity-cli', 'mcp_config.json'),
+          pathe.join(geminiHome, 'antigravity-ide', 'mcp_config.json')
+        ];
+        for (const globalAgyMcpPath of globalMcpTargets) {
+          if (!fs.existsSync(pathe.dirname(globalAgyMcpPath))) continue;
+          let globalMcp = {};
+          if (fs.existsSync(globalAgyMcpPath)) {
+            try {
+              globalMcp = JSON.parse(fs.readFileSync(globalAgyMcpPath, 'utf8'));
+            } catch (_) {
+              globalMcp = {};
+            }
           }
+          if (!globalMcp.mcpServers || typeof globalMcp.mcpServers !== 'object') {
+            globalMcp.mcpServers = {};
+          }
+          globalMcp.mcpServers['coordinate-of-code'] = serverEntry;
+          globalMcp.mcpServers['hey-yu'] = serverEntry;
+          fs.writeFileSync(globalAgyMcpPath, `${JSON.stringify(globalMcp, null, 2)}\n`, 'utf8');
+          updatedFiles.push(globalAgyMcpPath);
         }
-        if (!globalMcp.mcpServers || typeof globalMcp.mcpServers !== 'object') {
-          globalMcp.mcpServers = {};
-        }
-        globalMcp.mcpServers['coordinate-of-code'] = serverEntry;
-        globalMcp.mcpServers['hey-yu'] = serverEntry;
-        fs.writeFileSync(globalAgyMcpPath, `${JSON.stringify(globalMcp, null, 2)}\n`, 'utf8');
-        updatedFiles.push(globalAgyMcpPath);
 
         const globalRulePath = pathe.join(globalConfigDir, 'rules', 'hey-yu-rule.md');
         fs.mkdirSync(pathe.dirname(globalRulePath), { recursive: true });
@@ -919,7 +931,9 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
   fs.writeFileSync(claudeSettingsPath, `${JSON.stringify(claudeSettings, null, 2)}\n`, 'utf8');
   updatedFiles.push(claudeSettingsPath);
 
-  recycleRunningMcpDaemons();
+  if (process.env.HEY_YU_SKIP_GLOBAL_MCP !== '1') {
+    recycleRunningMcpDaemons();
+  }
 
   return { root, updatedFiles };
 }
@@ -927,7 +941,7 @@ export function provisionWorkspace(targetRoot = defaultProjectRoot) {
 function recycleRunningMcpDaemons() {
   if (process.platform === 'win32') return;
   try {
-    const out = execFileSync('pgrep', ['-f', 'hey_yu_mcp\\.js'], { encoding: 'utf8' });
+    const out = execFileSync('pgrep', ['-f', 'hey_yu_mcp\\.js|mcp_server\\.js'], { encoding: 'utf8' });
     for (const line of out.split('\n')) {
       const pid = Number(line.trim());
       if (pid && pid !== process.pid && pid !== process.ppid) {
@@ -957,7 +971,16 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
       if (existing?.mcpServers) {
         delete existing.mcpServers['coordinate-of-code'];
         delete existing.mcpServers['hey-yu'];
-        fs.writeFileSync(mcpPath, `${JSON.stringify(existing, null, 2)}\n`, 'utf8');
+        delete existing.mcpServers['yu'];
+        delete existing.mcpServers['hey-yu-mcp-server'];
+        if (Object.keys(existing.mcpServers).length === 0) {
+          delete existing.mcpServers;
+        }
+        if (Object.keys(existing).length === 0) {
+          fs.rmSync(mcpPath, { force: true });
+        } else {
+          fs.writeFileSync(mcpPath, `${JSON.stringify(existing, null, 2)}\n`, 'utf8');
+        }
         cleanedPaths.push(mcpPath);
       }
     } catch (_) {}
@@ -976,6 +999,9 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
         } else {
           fs.writeFileSync(docPath, nextText ? `${nextText}\n` : '', 'utf8');
         }
+        cleanedPaths.push(docPath);
+      } else if (existing.startsWith('<!-- hey-yu-COORDINATE-OF-CODE -->') && deleteIfEmpty) {
+        fs.rmSync(docPath, { force: true });
         cleanedPaths.push(docPath);
       }
     } catch (_) {}
@@ -1025,15 +1051,62 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
 
   cleanHooksFile(pathe.join(root, '.agents', 'hooks.json'));
 
+  const claudeSettingsPath = pathe.join(root, '.claude', 'settings.json');
+  if (fs.existsSync(claudeSettingsPath)) {
+    try {
+      const claudeSettings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
+      if (claudeSettings?.hooks && typeof claudeSettings.hooks === 'object') {
+        for (const eventKey of Object.keys(claudeSettings.hooks)) {
+          if (Array.isArray(claudeSettings.hooks[eventKey])) {
+            claudeSettings.hooks[eventKey] = claudeSettings.hooks[eventKey].filter(
+              entry => {
+                const str = JSON.stringify(entry);
+                return !str.includes('hey_yu_mcp.js') && !str.includes('hey-yu') && !str.includes('mvp_31_coordinate_of_code');
+              }
+            );
+            if (claudeSettings.hooks[eventKey].length === 0) {
+              delete claudeSettings.hooks[eventKey];
+            }
+          }
+        }
+        if (Object.keys(claudeSettings.hooks).length === 0) {
+          delete claudeSettings.hooks;
+        }
+        if (Object.keys(claudeSettings).length === 0) {
+          fs.rmSync(claudeSettingsPath, { force: true });
+        } else {
+          fs.writeFileSync(claudeSettingsPath, `${JSON.stringify(claudeSettings, null, 2)}\n`, 'utf8');
+        }
+        cleanedPaths.push(claudeSettingsPath);
+      }
+    } catch (_) {}
+  }
+
+  for (const dirName of ['.claude', '.cursor', '.windsurf']) {
+    const dirPath = pathe.join(root, dirName);
+    try {
+      if (fs.existsSync(dirPath) && fs.readdirSync(dirPath).length === 0) {
+        fs.rmdirSync(dirPath);
+      }
+    } catch (_) {}
+  }
+
   if (process.env.HEY_YU_SKIP_GLOBAL_MCP !== '1') {
     const geminiHome = pathe.join(os.homedir(), '.gemini');
     const globalConfigDir = pathe.join(geminiHome, 'config');
-    const globalAgyMcpPath = pathe.join(globalConfigDir, 'mcp_config.json');
-    if (fs.existsSync(globalAgyMcpPath)) {
+    const globalMcpTargets = [
+      pathe.join(globalConfigDir, 'mcp_config.json'),
+      pathe.join(geminiHome, 'antigravity', 'mcp_config.json'),
+      pathe.join(geminiHome, 'antigravity-cli', 'mcp_config.json'),
+      pathe.join(geminiHome, 'antigravity-ide', 'mcp_config.json')
+    ];
+    for (const globalAgyMcpPath of globalMcpTargets) {
+      if (!fs.existsSync(globalAgyMcpPath)) continue;
       try {
         const globalMcp = JSON.parse(fs.readFileSync(globalAgyMcpPath, 'utf8'));
         if (globalMcp?.mcpServers) {
           delete globalMcp.mcpServers['coordinate-of-code'];
+          delete globalMcp.mcpServers['coordinate-cloud'];
           delete globalMcp.mcpServers['hey-yu'];
           delete globalMcp.mcpServers['yu'];
           delete globalMcp.mcpServers['hey-yu-mcp-server'];
@@ -1055,10 +1128,16 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
       pathe.join(globalConfigDir, 'mcp', 'hey-yu-mcp-server'),
       pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'hey-yu'),
       pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'coordinate-of-code'),
+      pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'yu'),
+      pathe.join(geminiHome, 'antigravity-cli', 'mcp', 'hey-yu-mcp-server'),
       pathe.join(geminiHome, 'antigravity', 'mcp', 'hey-yu'),
       pathe.join(geminiHome, 'antigravity', 'mcp', 'coordinate-of-code'),
+      pathe.join(geminiHome, 'antigravity', 'mcp', 'yu'),
+      pathe.join(geminiHome, 'antigravity', 'mcp', 'hey-yu-mcp-server'),
       pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'hey-yu'),
-      pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'coordinate-of-code')
+      pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'coordinate-of-code'),
+      pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'yu'),
+      pathe.join(geminiHome, 'antigravity-ide', 'mcp', 'hey-yu-mcp-server')
     ];
     for (const p of globalRemovePaths) {
       if (fs.existsSync(p)) {
@@ -1080,6 +1159,8 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
         }
       }
     }
+
+    recycleRunningMcpDaemons();
   }
 
   return { root, cleanedPaths };
@@ -1163,6 +1244,28 @@ async function runSelfTest() {
       .trim()
       .split('\n');
 
+    const prevSkipGlobal = process.env.HEY_YU_SKIP_GLOBAL_MCP;
+    process.env.HEY_YU_SKIP_GLOBAL_MCP = '1';
+    let roundtripClean = false;
+    try {
+      fs.writeFileSync(pathe.join(tmpDir, 'AGENTS.md'), '# Existing Team Rules\nKeep this section intact.\n', 'utf8');
+      provisionWorkspace(tmpDir);
+      const provisionedAgents = fs.readFileSync(pathe.join(tmpDir, 'AGENTS.md'), 'utf8');
+      const hadMarkers = provisionedAgents.includes('<!-- hey-yu-COORDINATE-OF-CODE:START -->') &&
+        provisionedAgents.includes('# Existing Team Rules');
+      unprovisionWorkspace(tmpDir);
+      const restoredAgents = fs.readFileSync(pathe.join(tmpDir, 'AGENTS.md'), 'utf8');
+      roundtripClean =
+        hadMarkers &&
+        restoredAgents.trim() === '# Existing Team Rules\nKeep this section intact.' &&
+        !fs.existsSync(pathe.join(tmpDir, '.mcp.json')) &&
+        !fs.existsSync(pathe.join(tmpDir, 'CLAUDE.md')) &&
+        !fs.existsSync(pathe.join(tmpDir, '.coordinate'));
+    } finally {
+      if (prevSkipGlobal === undefined) delete process.env.HEY_YU_SKIP_GLOBAL_MCP;
+      else process.env.HEY_YU_SKIP_GLOBAL_MCP = prevSkipGlobal;
+    }
+
     const checks = {
       symbol_resolved: hit.resolution_status === 'EXISTING_FOUND' && hit.name === 'calculateTaxCents',
       has_code_preview: typeof hit.code_preview === 'string' && hit.code_preview.includes('calculateTaxCents'),
@@ -1181,7 +1284,8 @@ async function runSelfTest() {
         Boolean(hookPreToolGrep.reason && hookPreToolGrep.reason.includes('calculateTaxCents')) &&
         Boolean(hookPreToolShell.reason && hookPreToolShell.reason.includes('Workspace AST Coordinate Map')) &&
         Array.isArray(hookPreInvokeAfterAutoDispatch.injectSteps) &&
-        hookTelemetryLines.length === 3
+        hookTelemetryLines.length === 3,
+      init_and_uninstall_roundtrip: roundtripClean
     };
 
     const allPassed = Object.values(checks).every(Boolean);
