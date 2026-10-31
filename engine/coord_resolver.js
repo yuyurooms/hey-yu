@@ -143,6 +143,7 @@ export class CoordinateResolver {
     try {
       if (!fs.existsSync(this.cacheFilePath)) return;
       const raw = JSON.parse(fs.readFileSync(this.cacheFilePath, 'utf8'));
+      if (raw?.version !== '0.1.0-alpha') return;
       const entries = raw?.entries || {};
       for (const [relPath, item] of Object.entries(entries)) {
         if (item?.statKey && item?.parsed?.fileNode) {

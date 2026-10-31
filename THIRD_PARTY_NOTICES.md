@@ -37,7 +37,7 @@ We gratefully acknowledge the authors and maintainers of the following open-sour
 - **Repository:** https://github.com/graphology/graphology
 
 ### 6. xxhash-wasm (`xxhash-wasm`)
-- **Role in `hey-yu`:** Zero-dependency WebAssembly implementation of `xxHash` (`xxh64`), used to generate deterministic 64-bit cadastral IDs (`crd_...`) and structural CST Merkle skeleton hashes (`merkle_hash`).
+- **Role in `hey-yu`:** Zero-dependency WebAssembly implementation of `xxHash` (`xxh32` / `h32ToString`), used to generate deterministic 32-bit cadastral IDs (`crd_...`) and structural CST Merkle skeleton hashes (`merkle_hash`).
 - **License:** MIT License
 - **Copyright:** Copyright (c) 2020-2025 Jungomi and contributors (based on xxHash by Yann Collet)
 - **Repository:** https://github.com/jungomi/xxhash-wasm

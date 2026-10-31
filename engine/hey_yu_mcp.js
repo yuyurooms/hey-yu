@@ -74,7 +74,7 @@ const TOOLS = [
   {
     name: 'hey_yu',
     description:
-      'Instant 1-step AST spatial coordinate resolver (<15ms). Returns cadastral_id, line_span, internal_landmarks, coordinate_dispatcher, and impact_graph, or pass: true.',
+      'Instant 1-step AST spatial coordinate resolver (<15ms). Returns cadastral_id, line_span, code_preview, coordinate_dispatcher, impact_graph, and related_coordinates, or pass: true.',
     inputSchema: z.toJSONSchema(HeyYuArgsSchema)
   },
   {
@@ -1290,7 +1290,7 @@ export function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
             claudeSettings.hooks[eventKey] = claudeSettings.hooks[eventKey].filter(
               entry => {
                 const str = JSON.stringify(entry);
-                return !str.includes('hey_yu_mcp.js') && !str.includes('hey-yu') && !str.includes('mvp_31_coordinate_of_code');
+                return !str.includes('hey_yu_mcp.js') && !str.includes('hey-yu');
               }
             );
             if (claudeSettings.hooks[eventKey].length === 0) {
@@ -1610,6 +1610,14 @@ if (invokedScriptPath === __filename) {
     const r = await getResolver(targetDir);
     const out = await r.resolve({ query: queryStr });
     recordTelemetry(targetDir, 'cli_resolve', { query: queryStr }, out);
+    process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+    process.exit(0);
+  }
+
+  if (subcommand === 'map') {
+    const targetDir = positionals[1] ? pathe.resolve(positionals[1]) : defaultProjectRoot;
+    const r = await getResolver(targetDir);
+    const out = await r.getProjectMap();
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     process.exit(0);
   }
