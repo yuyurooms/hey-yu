@@ -840,16 +840,11 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
         fs.rmSync(pendingStatusPath, { force: true });
         if (dispatchText) {
           recordHookEvent('inject_auto_dispatch_mid_turn', true);
-          const statusBanner =
-            dispatchText.split('\n').find(l => l.startsWith('[hey-yu')) || dispatchText.split('\n')[0];
           return {
             injectSteps: [
               {
                 systemMessage: {
-                  systemMessage: dispatchText,
-                  metadata: {
-                    user_markdown: `\`${statusBanner}\``
-                  }
+                  systemMessage: dispatchText
                 }
               }
             ]
@@ -869,10 +864,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
             injectSteps: [
               {
                 systemMessage: {
-                  systemMessage: msg,
-                  metadata: {
-                    user_markdown: `\`${pendingStatusLine}\``
-                  }
+                  systemMessage: msg
                 }
               }
             ]
