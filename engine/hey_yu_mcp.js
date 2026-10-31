@@ -131,11 +131,12 @@ function findWorkspaceRootFromPath(startPath) {
       curr = pathe.dirname(curr);
     }
     let fallbackPkgRoot = null;
+    let depth = 0;
     while (curr && curr !== '/' && curr !== home) {
       if (
         fs.existsSync(pathe.join(curr, '.hey-yu')) ||
-        fs.existsSync(pathe.join(curr, '.coordinate')) ||
-        fs.existsSync(pathe.join(curr, '.agents', 'rules', 'hey-yu-rule.md'))
+        fs.existsSync(pathe.join(curr, '.coordinate', 'ast_cache.json')) ||
+        (depth <= 1 && fs.existsSync(pathe.join(curr, '.coordinate')))
       ) {
         return curr;
       }
@@ -151,6 +152,7 @@ function findWorkspaceRootFromPath(startPath) {
       const parent = pathe.dirname(curr);
       if (parent === curr) break;
       curr = parent;
+      depth++;
     }
     return fallbackPkgRoot;
   } catch (_) {
@@ -162,8 +164,16 @@ function resolveEffectiveProjectRoot(rawArgs = {}) {
   if (typeof rawArgs?.project_root === 'string' && rawArgs.project_root.trim()) {
     const explicitRoot = pathe.resolve(rawArgs.project_root.trim());
     if (fs.existsSync(explicitRoot)) {
-      recordActiveWorkspace(explicitRoot);
-      return explicitRoot;
+      const parentRoot = pathe.dirname(explicitRoot);
+      const effectiveRoot =
+        !fs.existsSync(pathe.join(explicitRoot, '.hey-yu')) &&
+        !fs.existsSync(pathe.join(explicitRoot, '.coordinate', 'ast_cache.json')) &&
+        (fs.existsSync(pathe.join(parentRoot, '.hey-yu')) ||
+          fs.existsSync(pathe.join(parentRoot, '.coordinate', 'ast_cache.json')))
+          ? parentRoot
+          : explicitRoot;
+      recordActiveWorkspace(effectiveRoot);
+      return effectiveRoot;
     }
   }
   if (typeof rawArgs?.file === 'string' && pathe.isAbsolute(rawArgs.file.trim())) {
@@ -212,15 +222,23 @@ function recordTelemetry(projectRoot, toolName, payload, result) {
       timestamp: ts,
       tool: toolName,
       query: payload?.query || payload?.file || null,
+      origin_file: result?.origin_file || null,
       resolution_status: result?.resolution_status || 'MAP',
       cadastral_id: result?.cadastral_id || null,
       resolution_time_ms: result?.resolution_time_ms ?? null,
       user_status_line: result?.user_status_line || null
     };
-    fs.appendFileSync(logPath, `${JSON.stringify(entry)}\n`, 'utf8');
+    if (toolName !== 'cli_resolve') {
+      fs.appendFileSync(logPath, `${JSON.stringify(entry)}\n`, 'utf8');
+    }
 
-    if (result?.resolution_status === 'EXISTING_FOUND' && result?.user_status_line) {
-      fs.writeFileSync(pendingStatusPath, result.user_status_line, 'utf8');
+    if (
+      (result?.resolution_status === 'EXISTING_FOUND' || result?.resolution_status === 'MAP') &&
+      result?.user_status_line
+    ) {
+      if (toolName !== 'cli_resolve') {
+        fs.writeFileSync(pendingStatusPath, result.user_status_line, 'utf8');
+      }
       fs.appendFileSync(liveLogPath, `[${ts}] ${result.user_status_line}\n`, 'utf8');
     } else if (result?.resolution_status === 'PASS') {
       fs.appendFileSync(
@@ -421,12 +439,21 @@ description: Universal polyglot AST spatial coordinate dispatcher (Coordinate of
 `;
 }
 
-function parseShellSearchCommand(cmdText) {
+function parseShellSearchCommand(cmdText, root = defaultProjectRoot, cwd = root) {
   const raw = String(cmdText || '').trim();
   if (!raw) return null;
 
+  let effectiveCwd = pathe.resolve(cwd || root);
+  const cdMatch = raw.match(/^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*(?:&&|;)\s*/i);
+  if (cdMatch) {
+    const cdTarget = cdMatch[1] || cdMatch[2] || cdMatch[3];
+    if (cdTarget) {
+      effectiveCwd = pathe.resolve(effectiveCwd, cdTarget);
+    }
+  }
+
   const stripped = raw.replace(/^(?:cd\s+(?:"[^"]+"|'[^']+'|\S+)\s*(?:&&|;)\s*)+/i, '').trim();
-  const cmdMatch = stripped.match(/^(grep|egrep|fgrep|rg|ripgrep|ag|ack|find|fd)\b\s*(.*)$/i);
+  const cmdMatch = stripped.match(/^(grep|egrep|fgrep|rg|ripgrep|ag|ack|find|fd|ls|tree)\b\s*(.*)$/i);
   if (!cmdMatch) return null;
 
   const bin = cmdMatch[1].toLowerCase();
@@ -435,7 +462,25 @@ function parseShellSearchCommand(cmdText) {
     t.replace(/^['"]|['"]$/g, '')
   );
 
-  if (bin === 'find' || bin === 'fd') {
+  if (bin === 'find' || bin === 'fd' || bin === 'ls' || bin === 'tree') {
+    const pathTokens = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i];
+      if (!tok || tok === '|' || tok === '>' || tok === '2>' || tok === '&&' || tok === ';') break;
+      if (tok.startsWith('-')) {
+        if (bin === 'find') break;
+        continue;
+      }
+      pathTokens.push(tok);
+    }
+    const targetPaths = pathTokens.length > 0 ? pathTokens : ['.'];
+    for (const pt of targetPaths) {
+      const absTarget = pathe.resolve(effectiveCwd, pt);
+      const isInsideRoot = absTarget === root || absTarget.startsWith(`${root}/`);
+      if (!isInsideRoot) return null;
+      const relTarget = pathe.relative(root, absTarget);
+      if (relTarget && isInfraOrIgnoredRelPath(root, relTarget)) return null;
+    }
     return { kind: 'map' };
   }
 
@@ -487,25 +532,27 @@ function isInfraOrIgnoredRelPath(root, relPath) {
 }
 
 function formatAutoDispatchContext(result, triggerTool) {
-  if (result.project_root && Array.isArray(result.files)) {
-    const fileSummaries = result.files
-      .slice(0, 12)
-      .map(f => {
-        if (typeof f === 'string') return `- ${f}`;
-        const syms = (f.symbols || [])
-          .slice(0, 6)
-          .map(s => `${s.name} (${s.cadastral_id}, L${s.line_span.start}-${s.line_span.end})`)
-          .join(', ');
-        return `- ${f.file} [${f.cadastral_id}]: ${syms || 'module'}`;
-      })
+  if (
+    result.project_root &&
+    (Array.isArray(result.architectural_hubs) || Array.isArray(result.files))
+  ) {
+    const layers = (result.architectural_layers || [])
+      .slice(0, 6)
+      .map(l => `- ${l}`)
+      .join('\n');
+    const hubs = (result.architectural_hubs || result.files || [])
+      .slice(0, 8)
+      .map(h => `- ${typeof h === 'string' ? h : h.file}`)
       .join('\n');
     const unresolvedLine =
       Array.isArray(result.unresolved_imports) && result.unresolved_imports.length > 0
         ? `\nUnresolved Local Imports: ${result.unresolved_imports.join(' | ')}`
         : '';
+    const statusHeader = result.user_status_line ? `${result.user_status_line}\n` : '';
     return (
-      `[hey-yu AUTO-DISPATCH on ${triggerTool}] Workspace AST Coordinate Map (${result.total_files} code files, ${result.total_coordinates} coordinates):\n` +
-      `${fileSummaries}${unresolvedLine}\n` +
+      `${statusHeader}[hey-yu AUTO-DISPATCH on ${triggerTool}] Workspace AST Coordinate Map (${result.total_files} code files, ${result.total_coordinates} coordinates, ${result.total_edges || 0} edges):\n` +
+      (layers ? `Architectural Layers:\n${layers}\n` : '') +
+      `Top Architectural Hubs:\n${hubs}${unresolvedLine}\n` +
       `Use hey_yu (or call_mcp_tool ServerName="hey-yu", ToolName="hey_yu") for 1-step symbol & dependency resolution.`
     );
   }
@@ -569,11 +616,43 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
   try {
     if (fs.existsSync(telemetryPath)) {
       const stat = fs.statSync(telemetryPath);
-      if (Date.now() - stat.mtimeMs < 180000) {
+      if (Date.now() - stat.mtimeMs < 60000) {
         recentHeyYuCall = true;
       }
     }
   } catch (_) {}
+
+  const dedupStepPath = pathe.join(coordDir, 'last_hook_step.json');
+  if (payload?.conversationId) {
+    const stepSignature = `${payload.conversationId}:${effectiveEvent}:${payload.stepIdx ?? ''}:${payload.invocationNum ?? ''}:${toolName}:${targetFileArg}:${cmdText}`;
+    try {
+      if (fs.existsSync(dedupStepPath)) {
+        const lastDedup = JSON.parse(fs.readFileSync(dedupStepPath, 'utf8'));
+        if (lastDedup.sig === stepSignature && Date.now() - Number(lastDedup.ts || 0) < 1500) {
+          return effectiveEvent === 'PreToolUse' ? { decision: 'allow' } : {};
+        }
+      }
+      fs.mkdirSync(coordDir, { recursive: true });
+      fs.writeFileSync(dedupStepPath, JSON.stringify({ sig: stepSignature, ts: Date.now() }), 'utf8');
+    } catch (_) {}
+  }
+
+  const wasFileRecentlyResolved = (relPath) => {
+    try {
+      if (!fs.existsSync(telemetryPath)) return false;
+      const lines = fs.readFileSync(telemetryPath, 'utf8').trim().split('\n').filter(Boolean);
+      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
+        const entry = JSON.parse(lines[i]);
+        if (
+          entry.origin_file === relPath &&
+          Date.now() - new Date(entry.timestamp).getTime() < 60000
+        ) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  };
 
   const recordHookEvent = (action, intercepted = false, resolvedId = null) => {
     try {
@@ -610,11 +689,6 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
       }
     }
 
-    if (recentHeyYuCall) {
-      recordHookEvent('allow_after_recent_hey_yu', false);
-      return { decision: 'allow' };
-    }
-
     let autoDispatchMsg = null;
     let resolvedId = null;
 
@@ -622,6 +696,9 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
     if (/^(read_file|read|view_file)$/.test(toolName) && targetFileArg) {
       const absTarget = pathe.resolve(cwd, targetFileArg);
       const relPath = pathe.relative(root, absTarget);
+      if (wasFileRecentlyResolved(relPath)) {
+        return { decision: 'allow' };
+      }
       const startLine = Number(toolArgs.StartLine || toolArgs.offset || 0) || undefined;
       const endLine = Number(toolArgs.EndLine || 0) || undefined;
       const isNarrowTargetedSpan = Boolean(startLine && endLine && endLine - startLine <= 80);
@@ -690,7 +767,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
     }
 
     if (!autoDispatchMsg && /^(run_command|bash|execute_command)$/.test(toolName)) {
-      const parsedShell = parseShellSearchCommand(cmdText);
+      const parsedShell = parseShellSearchCommand(cmdText, root, cwd);
       if (parsedShell?.kind === 'query') {
         const resolver = await getResolver(root);
         const result = await resolver.resolve({ query: parsedShell.query });
@@ -761,8 +838,20 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
         fs.rmSync(pendingStatusPath, { force: true });
         if (dispatchText) {
           recordHookEvent('inject_auto_dispatch_mid_turn', true);
+          const statusBanner =
+            dispatchText.split('\n').find(l => l.startsWith('[hey-yu')) || dispatchText.split('\n')[0];
           return {
-            injectSteps: [{ ephemeralMessage: dispatchText }]
+            injectSteps: [
+              {
+                systemMessage: {
+                  systemMessage: dispatchText,
+                  metadata: {
+                    user_markdown: `\`${statusBanner}\``
+                  }
+                },
+                ephemeralMessage: dispatchText
+              }
+            ]
           };
         }
       }
@@ -774,10 +863,17 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
         fs.rmSync(pendingStatusPath, { force: true });
         if (pendingStatusLine) {
           recordHookEvent('inject_pending_status_line', true);
+          const msg = `[hey-yu v0.1.0-alpha] Coordinate and dependency chain resolved! You MUST display this exact single-line report to the user in your response:\n${pendingStatusLine}`;
           return {
             injectSteps: [
               {
-                ephemeralMessage: `[hey-yu v0.1.0-alpha] Coordinate and dependency chain resolved! You MUST display this exact single-line report to the user in your response:\n${pendingStatusLine}`
+                systemMessage: {
+                  systemMessage: msg,
+                  metadata: {
+                    user_markdown: `\`${pendingStatusLine}\``
+                  }
+                },
+                ephemeralMessage: msg
               }
             ]
           };
@@ -1479,12 +1575,16 @@ if (invokedScriptPath === __filename) {
   if (subcommand === 'init' || subcommand === 'setup') {
     const targetDir = positionals[1] ? pathe.resolve(positionals[1]) : defaultProjectRoot;
     const res = provisionWorkspace(targetDir);
+    const r = await getResolver(res.root);
+    const mapSummary = await r.getProjectMap();
     process.stdout.write(
       `${JSON.stringify(
         {
           status: 'PROVISIONED',
           root: res.root,
           updated_files: res.updatedFiles.length,
+          indexed_files: mapSummary.total_files,
+          indexed_coordinates: mapSummary.total_coordinates,
           global_mcp_status: res.globalMcpStatus
         },
         null,
@@ -1517,7 +1617,7 @@ if (invokedScriptPath === __filename) {
     }
     const r = await getResolver(targetDir);
     const out = await r.resolve({ query: queryStr });
-    recordTelemetry(targetDir, 'hey_yu', { query: queryStr }, out);
+    recordTelemetry(targetDir, 'cli_resolve', { query: queryStr }, out);
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     process.exit(0);
   }

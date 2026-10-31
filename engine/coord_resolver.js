@@ -478,24 +478,109 @@ export class CoordinateResolver {
   }
 
   async getProjectMap() {
+    const t0 = performance.now();
     await this.sync();
-    const files = [];
+    const totalFiles = this.graphState.fileByRelPath.size;
+    const totalCoords = this.graphState.graph.order;
+    const totalEdges = this.graphState.graph.size;
+
+    const langCounts = {};
+    const layerBuckets = new Map();
+
     for (const fileNode of this.graphState.fileByRelPath.values()) {
-      const symbols = (fileNode.children || [])
-        .map(id => this.graphState.nodesById.get(id))
-        .filter(Boolean)
-        .map(s => `${s.cadastral_id}:${s.kind} ${s.name}(L${s.line_span.start}-${s.line_span.end})`);
-      const header = `${fileNode.cadastral_id} | ${fileNode.origin_file}:L${fileNode.line_span.start}-${fileNode.line_span.end}`;
-      files.push(symbols.length > 0 ? `${header} :: ${symbols.join(', ')}` : header);
+      const lang = fileNode.language || 'unknown';
+      langCounts[lang] = (langCounts[lang] || 0) + 1;
+
+      const parts = String(fileNode.origin_file || '').split('/');
+      const layerKey =
+        parts.length >= 3
+          ? `${parts[0]}/${parts[1]}`
+          : parts.length === 2
+            ? parts[0]
+            : '.';
+      if (!layerBuckets.has(layerKey)) {
+        layerBuckets.set(layerKey, { files: 0, coords: 0, samples: [] });
+      }
+      const bucket = layerBuckets.get(layerKey);
+      bucket.files += 1;
+      bucket.coords += 1 + (fileNode.children ? fileNode.children.length : 0);
+      if (bucket.samples.length < 4) {
+        bucket.samples.push(pathe.basename(fileNode.origin_file));
+      }
     }
-    const unresolved = this.graphState.unresolvedImports || [];
+
+    const languages = Object.fromEntries(
+      Object.entries(langCounts).sort((a, b) => b[1] - a[1])
+    );
+
+    const architecturalLayers = [...layerBuckets.entries()]
+      .sort((a, b) => b[1].coords - a[1].coords)
+      .slice(0, 10)
+      .map(
+        ([dir, info]) =>
+          `${dir} (${info.files} files, ${info.coords} coords) :: ${info.samples.join(', ')}`
+      );
+
+    const rankedNodes = [];
+    for (const node of this.graphState.nodesById.values()) {
+      const degree = this.graphState.graph.hasNode(node.cadastral_id)
+        ? this.graphState.graph.degree(node.cadastral_id)
+        : 0;
+      const childBonus = node.kind === 'file' && Array.isArray(node.children) ? node.children.length : 0;
+      const score = degree * 2 + childBonus;
+      if (score > 0 || totalCoords <= 15) {
+        rankedNodes.push({ node, degree, score });
+      }
+    }
+    rankedNodes.sort((a, b) => b.score - a.score);
+
+    const seenHubFiles = new Set();
+    const hubNodes = [];
+    for (const item of rankedNodes) {
+      if (hubNodes.length >= 12) break;
+      const fileCount = [...seenHubFiles].filter(f => f === item.node.origin_file).length;
+      if (fileCount >= 2 && rankedNodes.length > 12) continue;
+      seenHubFiles.add(item.node.origin_file);
+      hubNodes.push(item);
+    }
+
+    const architecturalHubs = hubNodes.map(({ node, degree }) => {
+      if (node.kind === 'file') {
+        const topSyms = (node.children || [])
+          .slice(0, 5)
+          .map(id => this.graphState.nodesById.get(id)?.name)
+          .filter(Boolean)
+          .join(', ');
+        return `${node.cadastral_id} | ${node.origin_file}:L${node.line_span.start}-${node.line_span.end} (file, ${degree} graph links)${topSyms ? ` :: ${topSyms}` : ''}`;
+      }
+      return `${node.cadastral_id} | ${node.origin_file}:L${node.line_span.start}-${node.line_span.end} (${node.kind} ${node.name}, ${degree} graph links)`;
+    });
+
+    const topHubsSummary = hubNodes
+      .slice(0, 4)
+      .map(({ node }) => `${node.name} (${node.origin_file}:${node.line_span.start}-${node.line_span.end})`)
+      .join(', ');
+
+    const elapsedMs = Number((performance.now() - t0).toFixed(2));
+    const unresolved = (this.graphState.unresolvedImports || []).slice(0, 15);
+    const userStatusLine =
+      `[hey-yu] Mapped workspace "${pathe.basename(this.projectRoot)}" -> ${totalFiles} files, ${totalCoords} coordinates, ${totalEdges} graph edges in ${elapsedMs.toFixed(1)}ms` +
+      (topHubsSummary ? ` | Top Hubs: [${topHubsSummary}]` : '');
+
     return {
+      resolution_status: 'MAP',
       project_root: this.projectRoot,
-      total_files: files.length,
-      total_coordinates: this.graphState.graph.order,
-      total_edges: this.graphState.graph.size,
+      total_files: totalFiles,
+      total_coordinates: totalCoords,
+      total_edges: totalEdges,
+      languages,
+      architectural_layers: architecturalLayers,
+      architectural_hubs: architecturalHubs,
       ...(unresolved.length > 0 ? { unresolved_imports: unresolved } : {}),
-      files
+      resolution_time_ms: elapsedMs,
+      user_status_line: userStatusLine,
+      next_step_hint:
+        'Call hey_yu({ query: "<symbol, route, table, or file>" }) to resolve exact coordinates, line_span, code_preview, and dependency spans.'
     };
   }
 }
