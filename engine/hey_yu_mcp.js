@@ -639,22 +639,24 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
 
   const wasFileRecentlyResolved = (relPath) => {
     try {
-      if (!fs.existsSync(telemetryPath)) return false;
-      const lines = fs.readFileSync(telemetryPath, 'utf8').trim().split('\n').filter(Boolean);
-      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
-        const entry = JSON.parse(lines[i]);
-        if (
-          entry.origin_file === relPath &&
-          Date.now() - new Date(entry.timestamp).getTime() < 60000
-        ) {
-          return true;
+      for (const tPath of [telemetryPath, hookTelemetryPath]) {
+        if (!fs.existsSync(tPath)) continue;
+        const lines = fs.readFileSync(tPath, 'utf8').trim().split('\n').filter(Boolean);
+        for (let i = lines.length - 1; i >= Math.max(0, lines.length - 12); i--) {
+          const entry = JSON.parse(lines[i]);
+          if (
+            entry.origin_file === relPath &&
+            Date.now() - new Date(entry.timestamp).getTime() < 60000
+          ) {
+            return true;
+          }
         }
       }
     } catch (_) {}
     return false;
   };
 
-  const recordHookEvent = (action, intercepted = false, resolvedId = null) => {
+  const recordHookEvent = (action, intercepted = false, resolvedId = null, originFile = null) => {
     try {
       fs.mkdirSync(coordDir, { recursive: true });
       fs.appendFileSync(
@@ -665,6 +667,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
           tool: toolName || null,
           intercepted,
           resolved_cadastral_id: resolvedId,
+          origin_file: originFile,
           recent_hey_yu_call: recentHeyYuCall,
           action
         })}\n`,
@@ -691,6 +694,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
 
     let autoDispatchMsg = null;
     let resolvedId = null;
+    let resolvedOriginFile = null;
 
     // Gate 2: File read competence check via @lumis-sh/lumis + @lumis-sh/wasm-bundle-full + web-tree-sitter
     if (/^(read_file|read|view_file)$/.test(toolName) && targetFileArg) {
@@ -700,25 +704,21 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
         return { decision: 'allow' };
       }
       const startLine = Number(toolArgs.StartLine || toolArgs.offset || 0) || undefined;
-      const endLine = Number(toolArgs.EndLine || 0) || undefined;
-      const isNarrowTargetedSpan = Boolean(startLine && endLine && endLine - startLine <= 80);
-
-      if (!isNarrowTargetedSpan) {
-        const langId = guessLanguage(relPath);
-        const pkg = await resolveAstLanguagePackage(langId);
-        if (!pkg) {
-          // Outside Tree-sitter AST competence (.md, .json, .jsonl, .txt, .env, etc.) -> 100% silent pass
-          return { decision: 'allow' };
-        }
-        const resolver = await getResolver(root);
-        const result = await resolver.resolve({ file: relPath, line: startLine });
-        const hasAstSymbols =
-          result?.resolution_status === 'EXISTING_FOUND' &&
-          (result.kind !== 'file' || (Array.isArray(result.file_symbols) && result.file_symbols.length > 0));
-        if (hasAstSymbols) {
-          autoDispatchMsg = formatAutoDispatchContext(result, toolName);
-          resolvedId = result.cadastral_id;
-        }
+      const langId = guessLanguage(relPath);
+      const pkg = await resolveAstLanguagePackage(langId);
+      if (!pkg) {
+        // Outside Tree-sitter AST competence (.md, .json, .jsonl, .txt, .env, etc.) -> 100% silent pass
+        return { decision: 'allow' };
+      }
+      const resolver = await getResolver(root);
+      const result = await resolver.resolve({ file: relPath, line: startLine });
+      const hasAstSymbols =
+        result?.resolution_status === 'EXISTING_FOUND' &&
+        (result.kind !== 'file' || (Array.isArray(result.file_symbols) && result.file_symbols.length > 0));
+      if (hasAstSymbols) {
+        autoDispatchMsg = formatAutoDispatchContext(result, toolName);
+        resolvedId = result.cadastral_id;
+        resolvedOriginFile = result.origin_file || relPath;
       }
     }
 
@@ -737,6 +737,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
         if (result?.resolution_status === 'EXISTING_FOUND') {
           autoDispatchMsg = formatAutoDispatchContext(result, toolName);
           resolvedId = result.cadastral_id;
+          resolvedOriginFile = result.origin_file || null;
         }
       }
     }
@@ -774,6 +775,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
         if (result?.resolution_status === 'EXISTING_FOUND') {
           autoDispatchMsg = formatAutoDispatchContext(result, toolName);
           resolvedId = result.cadastral_id;
+          resolvedOriginFile = result.origin_file || null;
         }
       } else if (parsedShell?.kind === 'map' && !wasMapRecentlyDispatched()) {
         const resolver = await getResolver(root);
@@ -794,7 +796,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
           'utf8'
         );
       } catch (_) {}
-      recordHookEvent('auto_dispatch_coordinates', true, resolvedId);
+      recordHookEvent('auto_dispatch_coordinates', true, resolvedId, resolvedOriginFile);
       if (isClaudeCode) {
         return {
           decision: 'allow',
@@ -848,8 +850,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
                   metadata: {
                     user_markdown: `\`${statusBanner}\``
                   }
-                },
-                ephemeralMessage: dispatchText
+                }
               }
             ]
           };
@@ -872,8 +873,7 @@ export async function evaluateLifecycleHook(payload = {}, eventName = '', projec
                   metadata: {
                     user_markdown: `\`${pendingStatusLine}\``
                   }
-                },
-                ephemeralMessage: msg
+                }
               }
             ]
           };
