@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Secrets & Environment
+.env
+.env.local
+.env.*.local
+
+# Logs and ephemeral traces
+logs/
+*.log
+engine/coordinate_history.log
+
+# Ephemeral runtime, SQLite caches & local IDE hooks
+.yu_sandbox/
+team_storage/
+.hey_yu/
+.hey-yu/
+.coordinate/
+.agents/
+.claude/
+.cursor/
+.windsurf/
+.mcp.json
+.cursorrules
+*.sqlite*
+universal_cadastre.json/
+
+# NPM distribution artifacts
+*.tgz
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Preserved historical experiments & internal audit checklists (managed locally)
+archive/
+other doc/
+ROUND*_PARTNER_REFACTORING_CHECKLIST.md
+RELEASE_CHECKLIST.md

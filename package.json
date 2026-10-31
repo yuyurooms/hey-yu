@@ -1,0 +1,73 @@
+{
+  "name": "coordinate-of-code-engine",
+  "version": "0.1.0-alpha",
+  "type": "module",
+  "description": "hey-yu (Coordinate of Code) — Accuracy & Precision for AI Coding Agents. Deterministic Spatial Coordinate Engine, Polyglot Web-Tree-Sitter CST Indexer & Local-First MIT MCP Server",
+  "scripts": {
+    "start": "node engine/hey_yu_mcp.js",
+    "mcp": "node engine/hey_yu_mcp.js",
+    "init": "node engine/hey_yu_mcp.js init",
+    "setup": "node engine/hey_yu_mcp.js setup",
+    "uninstall": "node engine/hey_yu_mcp.js uninstall",
+    "test": "node --check engine/workspace_walker.js && node --check engine/cst_indexer.js && node --check engine/coord_graph.js && node --check engine/coord_resolver.js && node --check engine/hey_yu_mcp.js && node engine/hey_yu_mcp.js self-test"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "bin": {
+    "hey-yu": "./engine/hey_yu_mcp.js",
+    "coordinate-mcp": "./engine/hey_yu_mcp.js"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuyurooms/hey-yu.git"
+  },
+  "homepage": "https://github.com/yuyurooms/hey-yu#readme",
+  "bugs": {
+    "url": "https://github.com/yuyurooms/hey-yu/issues"
+  },
+  "main": "./engine/coord_resolver.js",
+  "exports": {
+    ".": "./engine/coord_resolver.js",
+    "./resolver": "./engine/coord_resolver.js",
+    "./graph": "./engine/coord_graph.js",
+    "./indexer": "./engine/cst_indexer.js",
+    "./walker": "./engine/workspace_walker.js",
+    "./mcp": "./engine/hey_yu_mcp.js"
+  },
+  "files": [
+    "engine",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md",
+    "MANIFESTO.md"
+  ],
+  "keywords": [
+    "ast",
+    "cst",
+    "cadastre",
+    "coordinates",
+    "mcp",
+    "model-context-protocol",
+    "code-slicing",
+    "tree-sitter",
+    "oxc-resolver",
+    "orama",
+    "graphology",
+    "polyglot"
+  ],
+  "dependencies": {
+    "@lumis-sh/lumis": "^0.9.4",
+    "@lumis-sh/wasm-bundle-full": "^0.1.5",
+    "@orama/orama": "^3.1.18",
+    "graphology": "^0.26.0",
+    "graphology-traversal": "^0.3.1",
+    "ignore": "^7.0.13",
+    "oxc-resolver": "^11.24.2",
+    "pathe": "^2.0.3",
+    "web-tree-sitter": "^0.27.1",
+    "xxhash-wasm": "^1.1.0",
+    "zod": "^4.6.7"
+  }
+}
