@@ -537,7 +537,7 @@ function formatAutoDispatchContext(result, triggerTool) {
     (Array.isArray(result.architectural_hubs) || Array.isArray(result.files))
   ) {
     const layers = (result.architectural_layers || [])
-      .slice(0, 6)
+      .slice(0, 10)
       .map(l => `- ${l}`)
       .join('\n');
     const hubs = (result.architectural_hubs || result.files || [])

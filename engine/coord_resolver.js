@@ -499,14 +499,21 @@ export class CoordinateResolver {
             ? parts[0]
             : '.';
       if (!layerBuckets.has(layerKey)) {
-        layerBuckets.set(layerKey, { files: 0, coords: 0, samples: [] });
+        layerBuckets.set(layerKey, { files: 0, coords: 0, entries: [] });
       }
       const bucket = layerBuckets.get(layerKey);
+      const childCount = fileNode.children ? fileNode.children.length : 0;
+      const degree = this.graphState.graph.hasNode(fileNode.cadastral_id)
+        ? this.graphState.graph.degree(fileNode.cadastral_id)
+        : 0;
+      const relToLayer =
+        layerKey === '.'
+          ? fileNode.origin_file
+          : String(fileNode.origin_file || '').slice(layerKey.length + 1) ||
+            pathe.basename(fileNode.origin_file);
       bucket.files += 1;
-      bucket.coords += 1 + (fileNode.children ? fileNode.children.length : 0);
-      if (bucket.samples.length < 4) {
-        bucket.samples.push(pathe.basename(fileNode.origin_file));
-      }
+      bucket.coords += 1 + childCount;
+      bucket.entries.push({ name: relToLayer, weight: degree * 2 + childCount });
     }
 
     const languages = Object.fromEntries(
@@ -516,10 +523,13 @@ export class CoordinateResolver {
     const architecturalLayers = [...layerBuckets.entries()]
       .sort((a, b) => b[1].coords - a[1].coords)
       .slice(0, 10)
-      .map(
-        ([dir, info]) =>
-          `${dir} (${info.files} files, ${info.coords} coords) :: ${info.samples.join(', ')}`
-      );
+      .map(([dir, info]) => {
+        const topFiles = info.entries
+          .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name))
+          .slice(0, 15)
+          .map(e => e.name);
+        return `${dir} (${info.files} files, ${info.coords} coords) :: ${topFiles.join(', ')}`;
+      });
 
     const rankedNodes = [];
     for (const node of this.graphState.nodesById.values()) {
