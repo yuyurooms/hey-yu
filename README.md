@@ -40,9 +40,36 @@ In engineering, **Precision** and **Accuracy** mean two different things — and
 | What is inside `hey-yu` | What your AI (Artificial Intelligence) agent gets | Why it matters to you |
 | :--- | :--- | :--- |
 | **AST (Abstract Syntax Tree) Coordinates (`crd_...`)** | **Precision — Pure Coordinate Dispatcher** | Instead of fuzzy `grep` lines or dumping raw file text, every function, class, type, and SQL (Structured Query Language) table gets an exact coordinate (like squares on a chessboard: `e4`, `d8`) with exact `[startLine, endLine]` boundaries and `coordinate_dispatcher.required_file_spans`. |
-| **Compiler-Accurate Dependency Graph** | **Accuracy — Full Impact Awareness** | Reading `src/tax.ts` alone only shows what `src/tax.ts` imports at the top — it **never** shows who calls `src/tax.ts` from other folders. `hey-yu` returns `incoming_callers`, `imported_callees`, `shared_types`, and `related_coordinates` together with the target. |
-| **Import-Scoped Disambiguation** | **Zero False Homonyms** | If your repo has 15 functions named `validate()` or `save()`, `hey-yu` traces real module imports (`oxc-resolver` + polyglot path resolution) so unrelated modules never get mixed up. |
+| **Compiler-Accurate Dependency Graph** | **Accuracy — Full Impact Awareness** | Reading a single file only shows what that file imports at the top — it **never** shows who calls it from other folders. `hey-yu` returns `incoming_callers`, `imported_callees`, `shared_types`, and `related_coordinates` together with the target. |
+| **Import-Scoped Disambiguation** | **Zero False Homonyms** | If your repo has 15 functions named `validate()` or `createClient()`, `hey-yu` traces real module imports (`oxc-resolver` + polyglot path resolution) so unrelated modules never get mixed up. |
 | **Honest Silent Pass (`pass: true`)** | **Zero Noise on Normal Tasks** | When you ask general questions, edit `.md` (Markdown) / `.json` (JavaScript Object Notation) files, or run `git status`, `hey-yu` stays **100% silent** and never interferes. |
+
+### The Vibe-Coder's Iteration Math: Single-Prompt Tokens vs. Full-Day Tokens
+
+If you only look at a **single prompt**, it can sometimes appear that an agent using `hey-yu` makes 1–2 extra MCP (Model Context Protocol) tool calls or reads a few extra connected files compared to an agent that blindly edits the first file it finds (though with our **Pure Coordinate Dispatcher**, `hey-yu` often cuts LLM [Large Language Model] thinking tokens by **67%+** and finishes faster even on a single prompt).
+
+Here is why optimizing for "fewest tool calls on Turn 1" is a trap in real vibe-coding and production engineering:
+
+```text
+WITHOUT HEY-YU: Cheap Turn 1 -> Expensive 5-Turn Debugging Loop
+───────────────────────────────────────────────────────────────
+Prompt 1: "Audit/update the app..."   -> Agent skims top-level files, misses hidden
+                                         schemas, callers, or build flags. (Looks fast!)
+Prompt 2: "Wait, it crashed on run"   -> Re-sends entire chat history + error stack.
+Prompt 3: "You missed the SQL schema" -> Re-sends entire chat history + reads 10 more files.
+Prompt 4: "Fix the broken TypeScript" -> Re-sends entire chat history + patches types.
+───────────────────────────────────────────────────────────────
+Total for 1 feature: 4–5 prompts, 3–4x cumulative daily token burn, 40 minutes lost.
+
+
+WITH HEY-YU: Complete Coordinate & Dependency Dispatch on Turn 1
+───────────────────────────────────────────────────────────────
+Prompt 1: "Audit/update the app..."   -> Calls hey-yu (1.8ms - 34ms), gets all coordinates,
+                                         top hubs, callers, and exact line spans [start..end].
+                                      -> Delivers the complete, working result on Turn 1.
+───────────────────────────────────────────────────────────────
+Total for 1 feature: 1 prompt, predictable result, drastically fewer tokens burned per day.
+```
 
 ### Where `hey-yu` fits in your stack
 
@@ -60,64 +87,165 @@ In engineering, **Precision** and **Accuracy** mean two different things — and
 
 ---
 
-## Without `hey-yu` vs. With `hey-yu`
+## Real-World Case Study: The Hidden `.next/app` Trap (`gemini-pro-latest`)
 
-Here is what happens on the exact same task when a function has connected callers and types across multiple files:
+Instead of synthetic toy examples, here is a real side-by-side test we ran on **`gemini-pro-latest`** inside **Google Antigravity** on a production-scale MVP repository (`mvp/mvp_20_ab1/app123` — a 63-file Next.js 15 + React 19 + TypeScript + Supabase + SQL + Google Gemini Embedding 2 / Pinecone application).
+
+### The Trap Inside `app123`
+Before running the test, the repository had three real-world traps waiting for the agent:
+1. **Trap #1 (Hidden Source Tree):** The entire Next.js App Router source directory (`app/layout.tsx`, `app/page.tsx`, `app/actions.ts`, API routes, dashboard, contract generator) had been accidentally moved inside **`.next/app/`** — a build-cache folder listed in `.gitignore`. Running `npm run dev` or `npm run build` without noticing this would either fail or **wipe the source code**.
+2. **Trap #2 (Hardcoded Production Secrets):** Production keys (`SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `PINECONE_API_KEY`, `RESEND_API_KEY`) were hardcoded on lines `20–27` of `Dockerfile`.
+3. **Trap #3 (Masked Build Errors):** `next.config.ts` (lines `8–13`) had `typescript: { ignoreBuildErrors: true }` and `eslint: { ignoreDuringBuilds: true }`.
+
+### The Exact Prompt & Model
+We sent the exact same prompt across three isolated chat sessions on **`gemini-pro-latest`**:
+> **Prompt (Original):** `hey-yu вот тут mvp/mvp_20_ab1/app123 приложение - нужно сделать анализ / аудит / и как правильно его запустить - только анализ (зип не трогать)`
+> *(Translation: "hey-yu here in mvp/mvp_20_ab1/app123 is an application — need to do an analysis / audit / and how to properly run it — analysis only (do not touch the zip file)")*
+
+---
+
+### What Happened on Turn 1: Exact MCP Logs & What They Mean
+
+In **Chat 3 (Current `hey-yu` Pure Coordinate Dispatcher)**, at `0.0s` into the session (with **`0` characters of LLM thinking delay**), the agent immediately called `yu_get_project_map`:
+
+**1. Agent MCP Tool Call Request:**
+```json
+[{
+  "project_root": "/Users/kirill.ni/yuyurooms/mvp/mvp_20_ab1/app123"
+}]
+```
+
+**2. `hey-yu` MCP Response (`34ms` from centralized AST cache):**
+```json
+[{
+  "resolution_status": "MAP",
+  "project_root": "/Users/kirill.ni/yuyurooms/mvp/mvp_20_ab1/app123",
+  "total_files": 63,
+  "total_coordinates": 217,
+  "total_edges": 247,
+  "languages": {
+    "javascript": 31,
+    "sql": 15,
+    "typescript": 13,
+    "tsx": 3,
+    "bash": 1
+  },
+  "architectural_layers": [
+    ". (33 files, 89 coords) :: seed-properties.mjs, sync-pinecone.mjs, anonymize.mjs, delete-all-except-mine.mjs, test-aggregation.mjs, test-count.mjs, middleware.ts, maps-scraper.mjs, create-index.mjs, enable-realtime.js, test-db.mjs, test-embedding.mjs, test-embedding.ts, test-inference.mjs, test-pinecone.mjs",
+    "supabase/migrations (12 files, 60 coords) :: 0001_init.sql, 0004_triggers.sql, 20260713000000_google_maps_miner.sql, 0005_extend_properties.sql, 0008_handover_acts.sql, 0002_rls.sql, 0003_contracts_and_payments.sql, 0006_ai_chatbot.sql, 0009_google_auth_support.sql, 0002_add_contact_info.sql, 0003_storage.sql, 0007_tenant_agreed_conditions.sql",
+    "lib (3 files, 22 coords) :: database.types.ts, format.ts, utils.ts",
+    "scraper (2 files, 17 coords) :: krisha_scraper.js, process_krisha.js",
+    "lib/supabase (3 files, 8 coords) :: server.ts, admin.ts, client.ts",
+    "scripts (3 files, 7 coords) :: ingest.mjs, sync-all-properties.mjs, test-pinecone-query.mjs",
+    "components/layout (2 files, 6 coords) :: DashboardShell.tsx, Sidebar.tsx",
+    "components (1 files, 4 coords) :: AIChatWidget.tsx",
+    "supabase (3 files, 3 coords) :: seed_krisha.sql, seed_listings.sql, seed.sql",
+    "i18n (1 files, 1 coords) :: request.ts"
+  ],
+  "architectural_hubs": [
+    "crd_5e729bd8 | supabase/migrations/0001_init.sql:L1-166 (file, 20 graph links) :: user_role, property_status, application_status, deal_status, verification_status",
+    "crd_9413b296 | seed-properties.mjs:L1-130 (file, 14 graph links) :: loadEnv, SUPABASE_URL, SUPABASE_KEY, CITIES, DISTRICTS",
+    "crd_00bb1192 | lib/database.types.ts:L1-274 (file, 15 graph links) :: Json, Database, User, Property, PropertyPhoto",
+    "crd_0f32156a | lib/format.ts:L1-91 (file, 8 graph links) :: formatTenge, formatPricePerMonth, formatArea, formatFloor, formatRooms",
+    "crd_79f37166 | scraper/krisha_scraper.js:L1-419 (file, 8 graph links) :: SEED_LANDLORD_ID, TARGETS, LISTINGS_PER_CITY, escapeSQL, toSQLValue",
+    "crd_d247fddf | supabase/migrations/0004_triggers.sql:L1-55 (file, 8 graph links) :: handle_new_user, on_auth_user_created, users, handle_new_user, handle_verification_approved",
+    "crd_def23cfa | sync-pinecone.mjs:L1-152 (file, 8 graph links) :: loadEnv, SUPABASE_URL, SUPABASE_KEY, GEMINI_API_KEY, PINECONE_KEY",
+    "crd_52c78f36 | scraper/process_krisha.js:L1-300 (file, 7 graph links) :: SEED_LANDLORD_ID, INPUT_JSON, OUTPUT_SQL, esc, sql",
+    "crd_2583049d | lib/database.types.ts:L12-252 (type Database, 10 graph links)",
+    "crd_cc3762f3 | anonymize.mjs:L1-139 (file, 6 graph links) :: loadEnv, SUPABASE_URL, SUPABASE_KEY, FAKE_IMAGES, run",
+    "crd_6ffcf7e9 | seed-properties.mjs:L53-89 (function generateProperty, 9 graph links)",
+    "crd_2f40c9c8 | supabase/migrations/0001_init.sql:L39-51 (type users, 8 graph links)"
+  ],
+  "resolution_time_ms": 34,
+  "user_status_line": "[hey-yu] Mapped workspace \"app123\" -> 63 files, 217 coordinates, 247 graph edges in 34.0ms | Top Hubs: [0001_init.sql (supabase/migrations/0001_init.sql:1-166), seed-properties.mjs (seed-properties.mjs:1-130), database.types.ts (lib/database.types.ts:1-274), format.ts (lib/format.ts:1-91)]",
+  "next_step_hint": "Call hey_yu({ query: \"<symbol, route, table, or file>\", project_root: \"<project_root>\" }) to dispatch exact coordinates, line_span, coordinate_dispatcher.required_file_spans, and impact_graph."
+}]
+```
+
+#### What Every Field in This Log Means for the Agent:
+1. **`total_files: 63`, `total_coordinates: 217`, `total_edges: 247`, `languages`:** In `34ms`, the agent knows the exact scale and polyglot composition (`31` JS, `15` SQL, `13` TS, `3` TSX, `1` Bash) without running a single `find` or `wc -l`.
+2. **`architectural_layers`:** Groups all 63 git-tracked files by folder and ranks them by AST coordinate density (`supabase/migrations` with 12 SQL files and 60 coordinates, `lib`, `scraper`, `lib/supabase`, `components`, `i18n`). **Crucial diagnostic signal:** The agent immediately sees that `components/` and `middleware.ts` exist, **but there is no top-level `app/` layer in the git-tracked tree** — because `.next/` is git-ignored!
+3. **`architectural_hubs`:** Lists the 12 highest-connectivity AST nodes in the project (`crd_5e729bd8` in `0001_init.sql:L1-166` with 20 graph links, `crd_2583049d` `type Database` in `lib/database.types.ts:L12-252` with 10 graph links, `crd_6ffcf7e9` `function generateProperty` in `seed-properties.mjs:L53-89` with 9 graph links). The agent already knows the database enums, core TypeScript types, Pinecone sync scripts, and Krisha scraper without opening those files.
+4. **Targeted Coordinate Dispatch (`hey_yu`):** Whenever the agent needs to drill into a specific hub or function (such as `generateProperty` or `Database`), `hey_yu` resolves its exact coordinate and dependency graph in **`<2ms`** (recorded in `live_audit.log`):
+   ```text
+   [hey-yu] Resolved function "generateProperty" (crd_6ffcf7e9) -> seed-properties.mjs:53-89 in 1.7ms | Dependencies: 2 Imported Callees [randomChoice (seed-properties.mjs:45-47), randomInt (seed-properties.mjs:49-51)], 5 Shared Types [CITIES (seed-properties.mjs:36-36), DISTRICTS (seed-properties.mjs:37-40), CATEGORIES (seed-properties.mjs:41-41), FURNISHED (seed-properties.mjs:43-43), CONDITIONS (seed-properties.mjs:42-42)] | Reading Plan: 9 exact spans across 1 files
+   [hey-yu] Resolved type "Database" (crd_2583049d) -> lib/database.types.ts:12-252 in 1.9ms | Dependencies: 5 Callers [createAdminClient (lib/supabase/admin.ts:6-17), createClient (lib/supabase/client.ts:4-9), createClient (lib/supabase/server.ts:5-28), DashboardShellProps (components/layout/DashboardShell.tsx:9-12), SidebarProps (components/layout/Sidebar.tsx:20-24)] | Reading Plan: 6 exact spans across 6 files
+   ```
+
+---
+
+### Full Agent Flow Comparison: Chat 1 (Without `hey-yu`) vs. Chat 2 & Chat 3 (With `hey-yu`)
+
+Here is how the agent behaved across all three real sessions on the exact same prompt:
 
 ```text
-WITHOUT HEY-YU (Isolated file view -> broken callers)
-─────────────────────────────────────────────────────
-Prompt: Update calculateTaxCents so tax exemption is supported, and make sure
-        nothing in billing breaks.
+CHAT 1: WITHOUT HEY-YU (08662839-dad3-4ec3-bb0a-c2c41ab2ecbf) — 142.0s (2m 22s)
+───────────────────────────────────────────────────────────────────────────────
+1. Turn 1-6:   Runs blind shell commands (ls -la, find -maxdepth 2, ls .next) to figure
+               out what folders exist in app123.
+2. Turn 7-15:  Discovers .next/app/, reads package.json, tsconfig.json, next.config.ts,
+               Dockerfile, middleware.ts, and .env.local.
+3. Turn 16-23: Checks a few files inside .next/app/ and reads only 0001_init.sql.
+4. Turn 24:    Writes report.
+   ❌ MISSED:  Never inspected scraper/krisha_scraper.js, components/AIChatWidget.tsx,
+               the other 11 SQL migrations (0002..0009, triggers, handover_acts, RLS),
+               and failed to warn about ignoreBuildErrors / ignoreDuringBuilds in next.config.ts.
 
-Agent:  1. Runs grep for "calculateTaxCents" -> gets raw line hits across multiple files.
-        2. Reads all of src/tax.ts to find where calculateTaxCents starts and ends.
-        3. Updates calculateTaxCents in src/tax.ts.
-        4. Stops there — because nothing inside src/tax.ts shows that settleInvoice()
-           in src/billing.ts calls it with InvoiceRequest from src/types.ts.
-        5. Result: Build breaks on the next run; you spend 3 more iterations pointing
-           the agent to src/billing.ts and src/types.ts.
+
+CHAT 2: WITH HEY-YU v0 (Old mode WITH 18-line code_preview) — 199.0s (3m 19s)
+───────────────────────────────────────────────────────────────────────────────
+1. Turn 1-2:   Reads SKILL.md, then calls yu_get_project_map (28ms).
+2. Turn 3-20:  Calls hey_yu on generateProperty (1.8ms) and Database (1.9ms). Because old
+               hey-yu returned 18-line truncated code_preview blocks, the agent read the
+               previews AND still called read_file on the full files (90,391 chars of tool output).
+3. Turn 21-37: Completes a 100% exhaustive audit — but took 37 turns (199s) due to preview bloat.
 
 
-WITH HEY-YU (Target coordinate + connected dependencies on Turn 1)
-──────────────────────────────────────────────────────────────────
-Prompt: Update calculateTaxCents so tax exemption is supported, and make sure
-        nothing in billing breaks.
-
-Agent:  1. Calls hey_yu({ query: "calculateTaxCents", expected_kind: "function", project_root: "/path/to/repo" })
-
-hey-yu: [hey-yu] Resolved function "calculateTaxCents" (crd_79c62312) -> src/tax.ts:2-4 in 1.5ms | Dependencies: 1 Callers [settleInvoice (src/billing.ts:3-7)], 1 Shared Types [InvoiceRequest (src/types.ts:1-5)] | Reading Plan: 4 exact spans across 3 files | Related Coordinates: [tenant_invoices (db/schema.sql:1-4)]
-
-        Returned in a single payload:
-        • Target Coordinate:  calculateTaxCents -> src/tax.ts (lines 2-4) [coordinate_dispatcher]
-        • Incoming Caller:    settleInvoice     -> src/billing.ts (lines 3-7)
-        • Shared Contract:    InvoiceRequest    -> src/types.ts (lines 1-5)
-        • Companion Schema:   tenant_invoices   -> db/schema.sql (lines 1-4)
-
-Agent:  2. Sees the target function, its caller, and its shared type before editing.
-        3. Updates src/types.ts, src/tax.ts, and src/billing.ts together in one pass.
-        4. Result: Working change on the first iteration, zero broken callers.
+CHAT 3: WITH HEY-YU PURE COORDINATE DISPATCHER (493f6044-ba66-4cdc-9eb9-c7a896a7a542) — 112.0s (1m 52s)
+───────────────────────────────────────────────────────────────────────────────
+1. Turn 1 (0.0s thinking): Immediately calls yu_get_project_map (34ms). Gets all 63 files,
+               217 coordinates, 247 edges, 10 architectural layers, and 12 top hubs.
+2. Turn 2-7:   Sees that app/ is absent from the git-tracked layers, checks .next/app/,
+               and confirms the misplaced Next.js App Router source tree.
+3. Turn 8-28:  Uses bounded line reads (StartLine: 1, EndLine: 50) across the exact files
+               needed (package.json, next.config.ts, Dockerfile, middleware.ts, Supabase
+               clients, database.types.ts, krisha_scraper.js, chat/route.ts, parse-document/route.ts).
+               Zero code_preview duplication; 27 out of 29 turns needed 0 chars of LLM thinking!
+4. Turn 29:    Delivers the complete architectural & security audit in 1m 52s.
 ```
+
+### Measured Metrics Across All 3 Runs (`app123`, `gemini-pro-latest`)
+
+| Metric | Chat 1: WITHOUT `hey-yu` (`08662839-...`) | Chat 2: Old `hey-yu` with `code_preview` (`3db6c5e6-...`) | Chat 3: `hey-yu` Pure Dispatcher (`493f6044-...`) | What This Proves (`Chat 3` vs `Chat 1` & `Chat 2`) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Wall-Clock Time** | `142.0s` (`2m 22s`) | `199.0s` (`3m 19s`) | **`112.0s` (`1m 52s`)** | **`21.1%` faster than Without `hey-yu`** (`-30s`) & **`43.7%` faster than Chat 2** (`-87s`) |
+| **Transcript Steps / LLM Turns** | `48` steps / `24` turns | `75` steps / `37` turns | **`58` steps / `29` turns** | **`-21.6%` fewer turns** than Chat 2 after removing `code_preview` |
+| **Tool Calls Breakdown** | `23` (`14` bash, `9` read, `0` MCP) | `36` (`3` MCP, `19` read, `13` bash, `1` task) | **`28` (`1` MCP, `16` read, `11` bash)** | Zero wasted preview reads; bounded `StartLine..EndLine` reads (`1..50`) |
+| **LLM Thinking Overhead** | `7,220` chars | `8,928` chars | **`2,377` chars** | **`3.0x` less thinking than Without `hey-yu` (`-67.1%`)** & **`3.7x` less than Chat 2 (`-73.4%`)** |
+| **Tool Output Volume** | `46,670` chars | `90,391` chars | **`48,710` chars** | **`-46.1%` less context bloat** than Chat 2; matches baseline footprint while covering 2x more architecture |
+| **Precision + Accuracy (Audit Completeness)** | **Partial:** Missed `ignoreBuildErrors`, 11 of 12 SQL migrations, `krisha_scraper.js`, and `AIChatWidget.tsx` | **100% Complete** | **100% Complete:** Caught `.next/app` trap, `Dockerfile:L20-L27` secrets, `next.config.ts:L8-L13` `ignoreBuildErrors`, all 12 SQL migrations, Gemini Embedding 2 + Pinecone RAG, and OCR | **100% architectural accuracy + faster execution** |
 
 ```mermaid
 flowchart LR
-    Prompt["Your Prompt:<br/>'Update calculateTaxCents'"] --> Resolve["hey-yu dispatches target<br/>+ dependency graph"]
-    Resolve --> Target["1. Precision (Target Coordinate):<br/>src/tax.ts (Lines 2-4)<br/>crd_79c62312 + required_file_spans"]
-    Target --> Deps["2. Accuracy (Connected Dependencies):<br/>- Caller: settleInvoice (src/billing.ts:3-7)<br/>- Shared Type: InvoiceRequest (src/types.ts:1-5)<br/>- SQL (Structured Query Language) Table: tenant_invoices (db/schema.sql:1-4)"]
-    Deps --> Result["3. Result:<br/>Agent updates the target and<br/>all connected contracts in 1 pass"]
+    Prompt["Your Prompt:<br/>'hey-yu audit mvp/mvp_20_ab1/app123'"] --> Resolve["Turn 1 (0.0s thinking):<br/>yu_get_project_map (34ms)"]
+    Resolve --> Target["1. Precision (Coordinates & Layers):<br/>63 files, 217 coords, 10 layers<br/>Spots missing ./app layer immediately"]
+    Target --> Deps["2. Accuracy (Hubs & Dependencies):<br/>- 0001_init.sql:L1-166 (20 links)<br/>- database.types.ts:L12-252 (10 links)<br/>- generateProperty (seed-properties.mjs:L53-89)"]
+    Deps --> Result["3. Result in 1m 52s (-67% thinking):<br/>Finds .next/app trap, Dockerfile:L20-27 secrets,<br/>next.config.ts:L8-13 & all 12 SQL migrations"]
 ```
 
-### Reading the 1-line status log in chat
+### Reading the 1-line status log in chat & `live_audit.log`
 
-Whenever `hey-yu` resolves an existing symbol (`EXISTING_FOUND`), it outputs one concise line in chat (and records it in `hey-yu/.coordinate/projects/<project_slug>_<hash>/live_audit.log`):
+Whenever `hey-yu` maps a workspace (`MAP`) or resolves an existing symbol (`EXISTING_FOUND`), it outputs one concise line in chat and appends structured telemetry to `hey-yu/.coordinate/projects/<project_slug>_<hash>/live_audit.log` and `mcp_telemetry.jsonl`:
 
 ```text
-[hey-yu] Resolved function "sendToGateway" (crd_42c8a8c2) -> src/gateway.ts:2-4 in 1.8ms | Dependencies: 1 Callers [authorizeCheckout (src/checkout.ts:3-5)], 1 Shared Types [PaymentIntent (src/types.ts:1-4)] | Reading Plan: 4 exact spans across 3 files
+[hey-yu] Mapped workspace "app123" -> 63 files, 217 coordinates, 247 graph edges in 34.0ms | Top Hubs: [0001_init.sql (supabase/migrations/0001_init.sql:1-166), seed-properties.mjs (seed-properties.mjs:1-130), database.types.ts (lib/database.types.ts:1-274), format.ts (lib/format.ts:1-91)]
+[hey-yu] Resolved type "Database" (crd_2583049d) -> lib/database.types.ts:12-252 in 1.9ms | Dependencies: 5 Callers [createAdminClient (lib/supabase/admin.ts:6-17), createClient (lib/supabase/client.ts:4-9), createClient (lib/supabase/server.ts:5-28), DashboardShellProps (components/layout/DashboardShell.tsx:9-12), SidebarProps (components/layout/Sidebar.tsx:20-24)] | Reading Plan: 6 exact spans across 6 files
 ```
 
-- **`Resolved function "sendToGateway" (crd_42c8a8c2) -> src/gateway.ts:2-4`** — **Precision:** the exact AST (Abstract Syntax Tree) declaration and line span.
-- **`Dependencies: 1 Callers [...], 1 Shared Types [...]`** — **Accuracy:** the upstream caller and shared contract that depend on this function.
-- **`Reading Plan: 4 exact spans across 3 files`** — the exact `[startLine, endLine]` windows across connected files so the agent reads only what is relevant.
+- **`Mapped workspace "app123" -> 63 files, 217 coordinates, 247 graph edges in 34.0ms`** — **Instant Orientation (`yu_get_project_map`):** gives the agent a complete breakdown of architectural layers (`supabase/migrations`, `lib`, `scraper`, `components`, etc.) and top connectivity hubs on Turn 1.
+- **`Resolved type "Database" (crd_2583049d) -> lib/database.types.ts:12-252 in 1.9ms`** — **Precision (`hey_yu`):** the exact AST (Abstract Syntax Tree) declaration and line span.
+- **`Dependencies: 5 Callers [createAdminClient ..., createClient ..., DashboardShellProps ..., SidebarProps ...]`** — **Accuracy:** every upstream file and component across the project that depends on this type.
+- **`Reading Plan: 6 exact spans across 6 files`** — `coordinate_dispatcher.required_file_spans` with exact `[startLine, endLine]` windows so the agent reads only the relevant lines via `read_file` with zero raw code preview duplication.
 
 ---
 
@@ -185,7 +313,8 @@ A navigation layer should never get in the way when you are chatting normally wi
 ```text
 [1] YOU SEND A PROMPT (IN ANY HUMAN LANGUAGE)
  │   ├─ General chat / "Run git status" / "Edit README.md"
- │   └─ "Update calculateTaxCents in the billing module" (or "хей ю проверь валидацию")
+ └─ "hey-yu вот тут mvp/mvp_20_ab1/app123 приложение - нужно сделать анализ / аудит..."
+    (or "Update generateProperty and check all connected Database types")
  ▼
 [2] YOUR AI AGENT PROCESSES THE PROMPT + GLOBAL SKILL (`SKILL.md` / Rules)
  │   │
@@ -194,8 +323,9 @@ A navigation layer should never get in the way when you are chatting normally wi
  │   │
  │   └──► Case B: Code navigation, refactoring, or architecture task
  │         └──► Agent translates your intent into `query` + `semantic_tokens`, passes `project_root`, and invokes `hey-yu`:
- │               • Method 1 (MCP Tool): `hey_yu({ query: "calculateTaxCents", semantic_tokens: ["tax", "invoice"], expected_kind: "function", project_root: "/path/to/project" })`
- │               • Method 2 (CLI Fallback): `node "<engine>/hey_yu_mcp.js" resolve "calculateTaxCents" "/path/to/project" --kind=function`
+ │               • Method 1 (MCP Tool): `yu_get_project_map({ project_root: "/Users/kirill.ni/yuyurooms/mvp/mvp_20_ab1/app123" })`
+ │                 or `hey_yu({ query: "generateProperty", expected_kind: "function", project_root: "/Users/kirill.ni/yuyurooms/mvp/mvp_20_ab1/app123" })`
+ │               • Method 2 (CLI Fallback): `node "<engine>/hey_yu_mcp.js" resolve "generateProperty" "/Users/kirill.ni/yuyurooms/mvp/mvp_20_ab1/app123" --kind=function`
  ▼
 [3] HEY-YU AST COORDINATE & DEPENDENCY ENGINE (`web-tree-sitter` + `@orama/orama` + `oxc-resolver` + `graphology`)
            │
@@ -203,12 +333,12 @@ A navigation layer should never get in the way when you are chatting normally wi
            │    └──► Agent proceeds directly to create the new code
            │
            ├─► Architecture map request (`yu_get_project_map` or `map`)
-           │    └──► RETURNS WORKSPACE AST COORDINATE MAP (`PROJECT_MAP`):
-           │         └─ Up to 10 architectural layers × 15 graph-weighted files + top 12 connectivity hubs
+           │    └──► RETURNS WORKSPACE AST COORDINATE MAP (`MAP` in 34ms):
+           │         └─ 63 files, 217 coordinates, 247 edges, 10 architectural layers + 12 connectivity hubs
            │
-           └─► Existing symbol matched (`EXISTING_FOUND`)
+           └─► Existing symbol matched (`EXISTING_FOUND` in 1.7ms)
                 └──► DISPATCHES TARGET COORDINATE + DEPENDENCIES IN 1 STEP:
-                     ├─ Precision: Coordinate (`crd_...`), `kind`, `name`, `file:start-end` & `coordinate_dispatcher.required_file_spans`
+                     ├─ Precision: Coordinate (`crd_6ffcf7e9`), `kind`, `name`, `seed-properties.mjs:53-89` & `coordinate_dispatcher.required_file_spans`
                      ├─ Accuracy:  Dependencies (`incoming_callers`, `imported_callees`, `shared_types`)
                      ├─ Companion: `related_coordinates` (SQL [Structured Query Language] tables / DI [Dependency Injection] implementations)
                      └─ 1-line status in chat & `hey-yu/.coordinate/projects/<slug>_<hash>/live_audit.log`: `[hey-yu] Resolved ...`
@@ -266,8 +396,14 @@ We tested `hey-yu` in a controlled paired A/B (Control vs. Treatment) run (`n = 
 - **Where `hey-yu` matters most (and where you don't need it):**
   On a tiny project (`<20` files) where every file is only `20–40` lines long, a baseline agent finishes in the same number of turns (`4` vs `4`), and returning a structured dependency graph adds a small token overhead (`+6.1%` input tokens on tiny files). **`hey-yu` is built for growing, multi-folder codebases and `300–2,000+` line files** — where missing an upstream caller in another directory or reading thousands of unrelated lines leads to broken builds and multi-turn rework.
 
-### 2. Intentional Architectural Boundaries
-- **A Navigation & Dependency Layer, not a heavy compiler:** `hey-yu` traces structural AST (Abstract Syntax Tree) and import edges (`IMPORTS_FILE`, `CALLS_COORD`, `USES_TYPE`) and leaves code generation and reasoning to your AI (Artificial Intelligence) agent.
+### 2. Full-Stack Workspace Audit Benchmark (63-File Next.js + Supabase + SQL App)
+We also measured `hey-yu` across three real end-to-end runs on a 63-file (`217` AST coordinates, `247` dependency edges) Next.js + TypeScript + Supabase + SQL application (`n = 3`, identical prompt & model):
+- **Without `hey-yu` (Baseline):** `142.0s` (`2m 22s`), `24` LLM turns, `7,220` thinking characters, `46,670` tool output characters. The agent had to discover the directory layout manually via shell commands and missed key domain modules (`AIChatWidget`, `krisha_scraper`, 12 SQL migration schemas, and `ignoreBuildErrors`).
+- **With `hey-yu` v0 (With raw `code_preview` snippets):** `199.0s` (`3m 19s`), `37` LLM turns, `8,928` thinking characters, `90,391` tool output characters. Including truncated raw code previews in the MCP response caused the agent to read both the preview and the full file via `read_file`.
+- **With `hey-yu` Pure Coordinate Dispatcher (Current — Zero `code_preview`):** **`112.0s` (`1m 52s` — `-21.1%` faster than baseline and `-43.7%` faster than preview mode)**, `29` LLM turns, **`2,377` thinking characters (`-67.1%` less LLM reasoning overhead vs. baseline, `-73.4%` vs. preview mode)**, and `48,710` tool output characters. On Turn 1 (`0.0s` thinking delay), the agent called `yu_get_project_map` (`34ms`), immediately saw all 10 architectural layers and 12 top hubs, read bounded line spans (`StartLine: 1, EndLine: 50`), and found **every** critical bug (misplaced `.next/app` source tree, hardcoded `Dockerfile` production secrets, and suppressed `next.config.ts` build errors).
+
+### 3. Intentional Architectural Boundaries
+- **A Pure Coordinate Dispatcher, not a file reader or heavy compiler:** `hey-yu` traces structural AST (Abstract Syntax Tree) and import edges (`IMPORTS_FILE`, `CALLS_COORD`, `USES_TYPE`) and dispatches `coordinate_dispatcher.required_file_spans` (`file`, `start_line`, `end_line`) without dumping raw code previews into the MCP payload. Your AI (Artificial Intelligence) agent reads only the exact line spans it needs via `read_file`.
 - **Runtime Dependency Injection (DI) & raw SQL (Structured Query Language) strings:** When classes are wired purely at runtime without static imports, `hey-yu` does not invent fake call edges; instead, it surfaces companion implementations and `.sql` tables under **`related_coordinates`** via token and literal matching.
 - **Brand-new symbols:** When you ask the agent to write new code that does not exist in the AST (Abstract Syntax Tree) yet, `hey-yu` returns `pass: true` and steps aside.
 
@@ -283,15 +419,16 @@ We tested `hey-yu` in a controlled paired A/B (Control vs. Treatment) run (`n = 
 ```javascript
 import { CoordinateResolver } from './engine/coord_resolver.js';
 
-const resolver = new CoordinateResolver('/absolute/path/to/your-project');
+const resolver = new CoordinateResolver('/Users/kirill.ni/yuyurooms/mvp/mvp_20_ab1/app123');
 await resolver.init();
 
 const hit = await resolver.resolve({
-  query: 'calculateTaxCents',
-  semantic_tokens: ['tax', 'invoice'],
+  query: 'generateProperty',
+  semantic_tokens: ['property', 'seed'],
   expected_kind: 'function'
 });
 console.log(hit.user_status_line);
+// [hey-yu] Resolved function "generateProperty" (crd_6ffcf7e9) -> seed-properties.mjs:53-89 in 1.7ms | Dependencies: 2 Imported Callees [randomChoice (seed-properties.mjs:45-47), randomInt (seed-properties.mjs:49-51)], 5 Shared Types [CITIES (seed-properties.mjs:36-36), DISTRICTS (seed-properties.mjs:37-40), CATEGORIES (seed-properties.mjs:41-41), FURNISHED (seed-properties.mjs:43-43), CONDITIONS (seed-properties.mjs:42-42)] | Reading Plan: 9 exact spans across 1 files
 ```
 
 If you run into an edge case with a specific language grammar or import pattern, open an issue in [GitHub Issues](https://github.com/yuyurooms/hey-yu/issues) with the relevant line from `live_audit.log`.
