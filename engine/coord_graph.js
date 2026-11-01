@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import pathe from 'pathe';
 import DirectedGraph from 'graphology';
-import { bfsFromNode } from 'graphology-traversal';
 import { ResolverFactory } from 'oxc-resolver';
 import { availableLanguages } from '@lumis-sh/lumis';
 
@@ -63,28 +62,25 @@ function resolveImportTargetRelPaths(
   filesByStemSuffix,
   filesByDirSuffix
 ) {
-  if (!rawSpecifier) return { targets: [], existsOnDisk: false };
+  if (!rawSpecifier) return [];
   const root = pathe.resolve(projectRoot);
   const fromAbsPath = pathe.join(root, fromRelPath);
   const fromDir = pathe.dirname(fromAbsPath);
-  let existsOnDisk = false;
 
   // 1. Primary resolution via oxc-resolver
   try {
     const res = resolver.resolveFileSync(fromAbsPath, rawSpecifier);
     if (res?.path) {
-      existsOnDisk = true;
       const rel = pathe.relative(root, res.path);
-      if (fileByRelPath.has(rel)) return { targets: [rel], existsOnDisk: true };
+      if (fileByRelPath.has(rel)) return [rel];
     }
   } catch (_) {}
 
   try {
     const resRoot = resolver.sync(fromDir, rawSpecifier);
     if (resRoot?.path) {
-      existsOnDisk = true;
       const rel = pathe.relative(root, resRoot.path);
-      if (fileByRelPath.has(rel)) return { targets: [rel], existsOnDisk: true };
+      if (fileByRelPath.has(rel)) return [rel];
     }
   } catch (_) {}
 
@@ -97,30 +93,30 @@ function resolveImportTargetRelPaths(
   if (cleanSpec.startsWith('.')) {
     const relStem = pathe.join(pathe.dirname(fromRelPath), cleanSpec);
     const relMatches = (filesByStemSuffix.get(relStem) || []).filter(f => f !== fromRelPath);
-    if (relMatches.length > 0) return { targets: relMatches, existsOnDisk: true };
+    if (relMatches.length > 0) return relMatches;
   }
 
   const slashSpec = pathe.normalize(cleanSpec.replaceAll('::', '/'));
   const normPath = slashSpec.includes('/') ? slashSpec : pathe.normalize(slashSpec.replaceAll('.', '/'));
   const segments = normPath.split('/').filter(s => s && s !== '.' && s !== '..');
-  if (segments.length === 0) return { targets: [], existsOnDisk };
+  if (segments.length === 0) return [];
 
   for (let start = 0; start < segments.length; start++) {
     const candidate = segments.slice(start).join('/');
     const stemMatches = (filesByStemSuffix.get(candidate) || []).filter(f => f !== fromRelPath);
-    if (stemMatches.length > 0) return { targets: stemMatches, existsOnDisk: true };
+    if (stemMatches.length > 0) return stemMatches;
 
     const dirMatches = (filesByDirSuffix.get(candidate) || []).filter(f => f !== fromRelPath);
-    if (dirMatches.length > 0) return { targets: dirMatches, existsOnDisk: true };
+    if (dirMatches.length > 0) return dirMatches;
 
     if (segments.length - start >= 2) {
       const candidateParent = segments.slice(start, -1).join('/');
       const parentStemMatches = (filesByStemSuffix.get(candidateParent) || []).filter(f => f !== fromRelPath);
-      if (parentStemMatches.length > 0) return { targets: parentStemMatches, existsOnDisk: true };
+      if (parentStemMatches.length > 0) return parentStemMatches;
     }
   }
 
-  return { targets: [], existsOnDisk };
+  return [];
 }
 
 /**
@@ -140,15 +136,13 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
   const filesByDir = new Map();
   const filesByStemSuffix = new Map();
   const filesByDirSuffix = new Map();
-  const unresolvedImports = [];
-  const seenUnresolved = new Set();
 
   for (const entry of indexedFiles) {
     if (!entry?.fileNode) continue;
     const { fileNode, symbolNodes } = entry;
     fileByRelPath.set(fileNode.origin_file, fileNode);
     nodesById.set(fileNode.cadastral_id, fileNode);
-    graph.addNode(fileNode.cadastral_id, fileNode);
+    graph.mergeNode(fileNode.cadastral_id, fileNode);
 
     const dir = pathe.dirname(fileNode.origin_file);
     if (!filesByDir.has(dir)) filesByDir.set(dir, []);
@@ -174,9 +168,12 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
     const fileMap = new Map();
     for (const sym of symbolNodes) {
       nodesById.set(sym.cadastral_id, sym);
-      graph.addNode(sym.cadastral_id, sym);
-      graph.addEdge(fileNode.cadastral_id, sym.cadastral_id, { relation: 'CONTAINS' });
-      fileMap.set(sym.name, sym);
+      graph.mergeNode(sym.cadastral_id, sym);
+      graph.mergeEdge(fileNode.cadastral_id, sym.cadastral_id, { relation: 'CONTAINS' });
+      const prevSym = fileMap.get(sym.name);
+      if (!prevSym || sym.kind === 'type') {
+        fileMap.set(sym.name, sym);
+      }
 
       if (!symbolsByName.has(sym.name)) symbolsByName.set(sym.name, []);
       symbolsByName.get(sym.name).push(sym);
@@ -193,7 +190,7 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
 
     const fileResolver = getResolverForFile(fileNode.origin_file);
     for (const imp of fileNode.imports || []) {
-      const { targets: targetRels, existsOnDisk } = resolveImportTargetRelPaths(
+      const targetRels = resolveImportTargetRelPaths(
         fileResolver,
         root,
         fileNode.origin_file,
@@ -202,18 +199,6 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
         filesByStemSuffix,
         filesByDirSuffix
       );
-      if (
-        targetRels.length === 0 &&
-        !existsOnDisk &&
-        (imp.from.startsWith('./') || imp.from.startsWith('../'))
-      ) {
-        const symPart = imp.symbols && imp.symbols.length > 0 ? ` (${imp.symbols.join(', ')})` : '';
-        const entryStr = `${fileNode.origin_file}:${imp.line} -> ${imp.from}${symPart}`;
-        if (!seenUnresolved.has(entryStr)) {
-          seenUnresolved.add(entryStr);
-          unresolvedImports.push(entryStr);
-        }
-      }
       for (const targetRel of targetRels) {
         const targetFileNode = fileByRelPath.get(targetRel);
         if (!targetFileNode) continue;
@@ -275,11 +260,11 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
     }
   }
 
-  return { graph, nodesById, fileByRelPath, unresolvedImports };
+  return { graph, nodesById, fileByRelPath };
 }
 
 /**
- * Extracts the Coordinate Dispatcher dependency chain (incoming callers, imported callees, shared types).
+ * Extracts direct 1-hop Coordinate Dispatcher hints (incoming callers, imported callees, shared types).
  */
 export function extractCoordDependencies(graphState, coordId) {
   const { graph, nodesById, fileByRelPath } = graphState;
@@ -312,35 +297,24 @@ export function extractCoordDependencies(graphState, coordId) {
     startIds.push(...target.children);
   }
 
-  // 1. Incoming Callers (up to 2 hops upstream)
+  // 1. Direct Incoming Callers (1-hop)
   for (const id of startIds) {
     if (!graph.hasNode(id)) continue;
-    bfsFromNode(
-      graph,
-      id,
-      (visitedId, attr, depth) => {
-        if (depth === 0 || depth > 2) return depth > 2;
-        const src = nodesById.get(visitedId);
-        if (!src || src.kind === 'file' || src.origin_file === target.origin_file) return;
-
-        graph.forEachOutEdge(visitedId, (edge, edgeAttr, fromId, toId) => {
-          if (edgeAttr.relation !== 'CALLS_COORD' && edgeAttr.relation !== 'USES_TYPE') {
-            return;
-          }
-          if (!callers.some(c => c.cadastral_id === src.cadastral_id)) {
-            callers.push({
-              cadastral_id: src.cadastral_id,
-              name: src.name,
-              kind: src.kind,
-              file: src.origin_file,
-              line_span: src.line_span
-            });
-            addSpan(src.origin_file, src.line_span, src.cadastral_id, 'caller', src.name);
-          }
+    graph.forEachInEdge(id, (edge, edgeAttr, sourceId) => {
+      if (edgeAttr.relation !== 'CALLS_COORD' && edgeAttr.relation !== 'USES_TYPE') return;
+      const src = nodesById.get(sourceId);
+      if (!src || src.kind === 'file' || src.cadastral_id === target.cadastral_id) return;
+      if (!callers.some(c => c.cadastral_id === src.cadastral_id)) {
+        callers.push({
+          cadastral_id: src.cadastral_id,
+          name: src.name,
+          kind: src.kind,
+          file: src.origin_file,
+          line_span: src.line_span
         });
-      },
-      { mode: 'inbound' }
-    );
+        addSpan(src.origin_file, src.line_span, src.cadastral_id, 'caller', src.name);
+      }
+    });
   }
 
   if (ownerFile && target.kind !== 'file' && graph.hasNode(ownerFile.cadastral_id)) {
@@ -360,53 +334,36 @@ export function extractCoordDependencies(graphState, coordId) {
     });
   }
 
-  // 2. Outbound Dependency Chain (up to 3 hops)
+  // 2. Direct Outbound Callees & Shared Types (1-hop)
   for (const startId of startIds) {
     if (!graph.hasNode(startId)) continue;
-    const spineReached = new Set([startId]);
-
-    bfsFromNode(
-      graph,
-      startId,
-      (visitedId, attr, depth) => {
-        if (depth === 0 || depth > 3) return depth > 3;
-        const dst = nodesById.get(visitedId);
-        if (!dst || dst.kind === 'file') return;
-
-        graph.forEachInEdge(visitedId, (edge, edgeAttr, fromId) => {
-          if (!spineReached.has(fromId)) return;
-          const rel = edgeAttr.relation;
-          if (rel !== 'CALLS_COORD' && rel !== 'USES_TYPE') {
-            return;
-          }
-          if (rel === 'USES_TYPE' || dst.kind === 'type') {
-            if (!sharedTypes.some(t => t.cadastral_id === dst.cadastral_id)) {
-              sharedTypes.push({
-                cadastral_id: dst.cadastral_id,
-                name: dst.name,
-                kind: dst.kind,
-                file: dst.origin_file,
-                line_span: dst.line_span
-              });
-              addSpan(dst.origin_file, dst.line_span, dst.cadastral_id, 'type', dst.name);
-            }
-          } else {
-            spineReached.add(visitedId);
-            if (!callees.some(c => c.cadastral_id === dst.cadastral_id)) {
-              callees.push({
-                cadastral_id: dst.cadastral_id,
-                name: dst.name,
-                kind: dst.kind,
-                file: dst.origin_file,
-                line_span: dst.line_span
-              });
-              addSpan(dst.origin_file, dst.line_span, dst.cadastral_id, 'callee', dst.name);
-            }
-          }
+    graph.forEachOutEdge(startId, (edge, edgeAttr, fromId, targetId) => {
+      const rel = edgeAttr.relation;
+      if (rel !== 'CALLS_COORD' && rel !== 'USES_TYPE') return;
+      const dst = nodesById.get(targetId);
+      if (!dst || dst.kind === 'file' || dst.cadastral_id === target.cadastral_id) return;
+      if (rel === 'USES_TYPE' || dst.kind === 'type') {
+        if (!sharedTypes.some(t => t.cadastral_id === dst.cadastral_id)) {
+          sharedTypes.push({
+            cadastral_id: dst.cadastral_id,
+            name: dst.name,
+            kind: dst.kind,
+            file: dst.origin_file,
+            line_span: dst.line_span
+          });
+          addSpan(dst.origin_file, dst.line_span, dst.cadastral_id, 'type', dst.name);
+        }
+      } else if (!callees.some(c => c.cadastral_id === dst.cadastral_id)) {
+        callees.push({
+          cadastral_id: dst.cadastral_id,
+          name: dst.name,
+          kind: dst.kind,
+          file: dst.origin_file,
+          line_span: dst.line_span
         });
-      },
-      { mode: 'outbound' }
-    );
+        addSpan(dst.origin_file, dst.line_span, dst.cadastral_id, 'callee', dst.name);
+      }
+    });
   }
 
   const uniqueFilesCount = new Set(requiredSpans.map(s => s.file)).size;

@@ -25,14 +25,6 @@ export function createCadastralId(seed) {
   return `crd_${xxHasher.h32ToString(String(seed))}`;
 }
 
-export function computeMerkleHash(node) {
-  const childHashes = [];
-  for (const child of node.namedChildren) {
-    childHashes.push(computeMerkleHash(child));
-  }
-  return xxHasher.h32ToString(`${node.type}(${childHashes.join(',')})`);
-}
-
 async function loadGrammarAndQueries(langId, wasmUrl, languagePackage) {
   if (languageCache.has(langId)) {
     return { lang: languageCache.get(langId), queries: queryCache.get(langId) };
@@ -114,7 +106,11 @@ function findEnclosingDeclarationNode(idNode, rootNode, declCallNodes) {
   ) {
     curr = curr.parent;
   } else {
-    const nameOrDecl = curr.childForFieldName('name') || curr.childForFieldName('declarator');
+    if (curr.childForFieldName('type')?.id === idNode.id) return null;
+    const nameOrDecl =
+      curr.childForFieldName('name') ||
+      curr.childForFieldName('declarator') ||
+      curr.childForFieldName('definition');
     if (nameOrDecl) {
       if (nameOrDecl.id !== idNode.id) return null;
     } else {
@@ -516,9 +512,10 @@ export async function indexFileCst(fileEntry) {
           if (declNode && isSingleToken) {
             const sLine = declNode.startPosition.row + 1;
             const eLine = declNode.endPosition.row + 1;
-            const key = `${symName}:${sLine}:${eLine}`;
+            const key = `${symName}:${sLine}`;
+            const hasParamsField = Boolean(declNode.childForFieldName('parameters'));
             const kind =
-              capName === 'function.method'
+              capName === 'function.method' || (hasParamsField && (capName === 'constructor' || capName.startsWith('type')))
                 ? 'method'
                 : capName.startsWith('type') ||
                     capName === 'class' ||
@@ -527,7 +524,8 @@ export async function indexFileCst(fileEntry) {
                     declNode.type.includes('table')
                   ? 'type'
                   : 'function';
-            if (!symbolsByKey.has(key) || kind === 'function') {
+            const prevSym = symbolsByKey.get(key);
+            if (!prevSym || eLine > prevSym.endLine || (kind === 'function' && prevSym.kind !== 'function')) {
               symbolsByKey.set(key, { name: symName, kind, declNode, startLine: sLine, endLine: eLine });
             }
           } else if (isSingleToken) {
@@ -557,28 +555,18 @@ export async function indexFileCst(fileEntry) {
       const coordId = createCadastralId(`${relPath}:${sym.kind}:${sym.name}:${sym.startLine}`);
       childIds.push(coordId);
 
-      const nestedSyms = allSyms.filter(
-        other =>
-          other !== sym &&
-          other.startLine >= sym.startLine &&
-          other.endLine <= sym.endLine &&
-          (other.startLine > sym.startLine || other.endLine < sym.endLine)
-      );
-      const isDirectLine = line =>
-        line >= sym.startLine &&
-        line <= sym.endLine &&
-        !nestedSyms.some(ns => line >= ns.startLine && line <= ns.endLine);
+      const isInSymSpan = line => line >= sym.startLine && line <= sym.endLine;
 
-      const symCalls = [...new Set(calls.filter(c => isDirectLine(c.line)).map(c => c.name))];
+      const symCalls = [...new Set(calls.filter(c => isInSymSpan(c.line)).map(c => c.name))];
       const symTypes = [
         ...new Set(
           referencedTypes
-            .filter(t => isDirectLine(t.line) && t.name !== sym.name)
+            .filter(t => isInSymSpan(t.line) && t.name !== sym.name)
             .map(t => t.name)
         )
       ];
       const symStrings = [
-        ...new Set(literals.filter(l => isDirectLine(l.line) && l.endLine <= sym.endLine).map(l => l.text))
+        ...new Set(literals.filter(l => isInSymSpan(l.line) && l.endLine <= sym.endLine).map(l => l.text))
       ];
 
       symbolNodes.push({
@@ -589,7 +577,6 @@ export async function indexFileCst(fileEntry) {
         language: langId,
         coverage: 'full',
         line_span: { start: sym.startLine, end: sym.endLine },
-        merkle_hash: computeMerkleHash(sym.declNode),
         parent_id: fileCoordId,
         calls: symCalls,
         referenced_types: symTypes,
@@ -605,7 +592,6 @@ export async function indexFileCst(fileEntry) {
       language: langId,
       coverage: 'full',
       line_span: { start: 1, end: lineCount },
-      merkle_hash: computeMerkleHash(rootNode),
       children: childIds,
       imports,
       imports_line_span: imports.length > 0 ? { start: minImportLine, end: maxImportLine } : null,

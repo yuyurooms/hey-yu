@@ -30,14 +30,14 @@ We gratefully acknowledge the authors and maintainers of the following open-sour
 - **Copyright:** Copyright (c) 2022-2025 OramaSearch Inc. (Michele Riva and contributors)
 - **Repository:** https://github.com/askorama/orama
 
-### 5. Graphology (`graphology` & `graphology-traversal`)
-- **Role in `hey-yu`:** Directed in-memory property graph (`DirectedGraph`) and breadth-first traversal engine (`bfsFromNode`) powering `Import-Scoped Edge Filter` and `Coordinate Dispatcher Dependency Walk` (`IMPORTS_FILE`, `CALLS_COORD`, `USES_TYPE`).
+### 5. Graphology (`graphology`)
+- **Role in `hey-yu`:** Directed in-memory property graph (`DirectedGraph`) powering import-scoped edge resolution and direct 1-hop dependency dispatch (`IMPORTS_FILE`, `CALLS_COORD`, `USES_TYPE`).
 - **License:** MIT License
 - **Copyright:** Copyright (c) 2016-2025 Guillaume Plique (Yomguithereal) and contributors
 - **Repository:** https://github.com/graphology/graphology
 
 ### 6. xxhash-wasm (`xxhash-wasm`)
-- **Role in `hey-yu`:** Zero-dependency WebAssembly implementation of `xxHash` (`xxh32` / `h32ToString`), used to generate deterministic 32-bit cadastral IDs (`crd_...`) and structural CST Merkle skeleton hashes (`merkle_hash`).
+- **Role in `hey-yu`:** Zero-dependency WebAssembly implementation of `xxHash` (`xxh32` / `h32ToString`), used to generate deterministic 32-bit coordinate IDs (`crd_...`) and isolated per-project cache directory hashes.
 - **License:** MIT License
 - **Copyright:** Copyright (c) 2020-2025 Jungomi and contributors (based on xxHash by Yann Collet)
 - **Repository:** https://github.com/jungomi/xxhash-wasm

@@ -304,16 +304,6 @@ export class CoordinateResolver {
       return { pass: true, resolution_status: 'PASS' };
     }
 
-    const buildPassResult = () => {
-      const qLower = rawQuery.toLowerCase();
-      const matchingUnresolved = (this.graphState?.unresolvedImports || []).filter(u =>
-        u.toLowerCase().includes(qLower)
-      );
-      return matchingUnresolved.length > 0
-        ? { pass: true, resolution_status: 'PASS', unresolved_imports: matchingUnresolved }
-        : { pass: true, resolution_status: 'PASS' };
-    };
-
     const oramaProps = [
       'name',
       'name_words',
@@ -339,7 +329,8 @@ export class CoordinateResolver {
       term: rawQuery,
       properties: oramaProps,
       boost: oramaBoost,
-      threshold: 0
+      threshold: 0,
+      limit: 200
     });
 
     if (!searchResult.hits || searchResult.hits.length === 0) {
@@ -349,26 +340,43 @@ export class CoordinateResolver {
           term: splitQuery,
           properties: oramaProps,
           boost: oramaBoost,
-          threshold: 0
+          threshold: 0,
+          limit: 200
         });
       }
     }
 
-    if ((!searchResult.hits || searchResult.hits.length === 0) && Array.isArray(semantic_tokens) && semantic_tokens.length > 0) {
-      const semTerm = semantic_tokens.filter(Boolean).join(' ').trim();
-      if (semTerm) {
-        searchResult = await search(this.oramaDb, {
-          term: semTerm,
-          properties: oramaProps,
-          boost: oramaBoost,
-          threshold: 0
-        });
+    const hitsById = new Map();
+    for (const hit of searchResult.hits || []) {
+      hitsById.set(hit.document.cadastral_id, { ...hit });
+    }
+
+    const semTerm = Array.isArray(semantic_tokens)
+      ? semantic_tokens.filter(Boolean).join(' ').trim()
+      : '';
+    if (semTerm) {
+      const semResult = await search(this.oramaDb, {
+        term: semTerm,
+        properties: oramaProps,
+        boost: oramaBoost,
+        threshold: hitsById.size === 0 ? 0 : 1,
+        limit: 200
+      });
+      const hadPrimaryHits = hitsById.size > 0;
+      for (const h of semResult.hits || []) {
+        const cid = h.document.cadastral_id;
+        const existing = hitsById.get(cid);
+        if (existing) {
+          existing.score += h.score * 0.35;
+        } else {
+          hitsById.set(cid, { ...h, score: hadPrimaryHits ? h.score * 0.15 : h.score });
+        }
       }
     }
 
-    const validHits = [...(searchResult.hits || [])];
+    const validHits = [...hitsById.values()];
     if (validHits.length === 0) {
-      return buildPassResult();
+      return { pass: true, resolution_status: 'PASS' };
     }
 
     const qLower = rawQuery.toLowerCase();
@@ -379,7 +387,7 @@ export class CoordinateResolver {
       const degree = this.graphState.graph.hasNode(id) ? this.graphState.graph.degree(id) : 0;
       return (
         hit.score +
-        (doc.name.toLowerCase() === qLower ? 50 : 0) +
+        (doc.name.toLowerCase() === qLower ? 150 : 0) +
         (kindHint && doc.kind === kindHint ? 20 : 0) +
         (doc.kind !== 'file' ? 5 : 0) +
         Math.min(degree, 10) * 0.5
@@ -390,23 +398,7 @@ export class CoordinateResolver {
     const bestHit = validHits[0];
     const target = this.graphState.nodesById.get(bestHit.document.cadastral_id);
     if (!target) {
-      return buildPassResult();
-    }
-
-    if (Array.isArray(semantic_tokens) && semantic_tokens.length > 0) {
-      const semResult = await search(this.oramaDb, {
-        term: semantic_tokens.join(' '),
-        properties: oramaProps,
-        boost: oramaBoost,
-        threshold: 1
-      });
-      const seenIds = new Set(validHits.map(h => h.document.cadastral_id));
-      for (const h of semResult.hits || []) {
-        if (!seenIds.has(h.document.cadastral_id)) {
-          seenIds.add(h.document.cadastral_id);
-          validHits.push(h);
-        }
-      }
+      return { pass: true, resolution_status: 'PASS' };
     }
 
     return this._buildFoundResponse(target, t0, validHits);
@@ -453,32 +445,16 @@ export class CoordinateResolver {
             }))
         : undefined;
 
-    const compactChain = [
-      `${target.cadastral_id}:${target.origin_file}:${target.line_span.start}-${target.line_span.end}(${target.name})`,
-      ...deps.coordinate_dispatcher.required_file_spans
-        .filter(s => s.cadastral_id !== target.cadastral_id)
-        .slice(0, 10)
-        .map(s => `${s.cadastral_id}:${s.file}:${s.line_span.start}-${s.line_span.end}(${s.name})`),
-      ...relatedCoords.map(r => `${r.cadastral_id}:${r.file}:${r.line_span.start}-${r.line_span.end}(${r.name})`)
-    ].join(', ');
-
-    const fileUnresolved = (this.graphState.unresolvedImports || []).filter(u =>
-      u.startsWith(`${target.origin_file}:`)
-    );
-
     return {
       pass: false,
       resolution_status: 'EXISTING_FOUND',
       cadastral_id: target.cadastral_id,
-      merkle_hash: target.merkle_hash,
       kind: target.kind,
       name: target.name,
       language: target.language,
       origin_file: target.origin_file,
       absolute_file_path: pathe.join(this.projectRoot, target.origin_file),
       line_span: target.line_span,
-      compact_chain: compactChain,
-      ...(fileUnresolved.length > 0 ? { unresolved_imports: fileUnresolved } : {}),
       ...(fileSymbols && fileSymbols.length > 0 ? { file_symbols: fileSymbols } : {}),
       coordinate_dispatcher: {
         required_file_spans: deps.coordinate_dispatcher.required_file_spans.slice(0, 10).map(s => ({
@@ -596,7 +572,6 @@ export class CoordinateResolver {
       .join(', ');
 
     const elapsedMs = Number((performance.now() - t0).toFixed(2));
-    const unresolved = (this.graphState.unresolvedImports || []).slice(0, 15);
     const userStatusLine =
       `[hey-yu] Mapped workspace "${pathe.basename(this.projectRoot)}" -> ${totalFiles} files, ${totalCoords} coordinates, ${totalEdges} graph edges in ${elapsedMs.toFixed(1)}ms` +
       (topHubsSummary ? ` | Top Hubs: [${topHubsSummary}]` : '');
@@ -610,7 +585,6 @@ export class CoordinateResolver {
       languages,
       architectural_layers: architecturalLayers,
       architectural_hubs: architecturalHubs,
-      ...(unresolved.length > 0 ? { unresolved_imports: unresolved } : {}),
       resolution_time_ms: elapsedMs,
       user_status_line: userStatusLine,
       next_step_hint:

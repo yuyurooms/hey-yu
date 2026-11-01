@@ -2,7 +2,7 @@
   "name": "hey-yu",
   "version": "0.1.0-alpha",
   "type": "module",
-  "description": "hey-yu (Coordinate of Code) — Accuracy & Precision for AI Coding Agents. Deterministic Spatial Coordinate Engine, Polyglot Web-Tree-Sitter CST Indexer & Local-First MIT MCP Server",
+  "description": "hey-yu (Coordinate of Code) — Precision & Dependency Awareness for AI Coding Agents. Local-First Polyglot CST Coordinate & Dependency Dispatcher (MCP + CLI)",
   "scripts": {
     "start": "node engine/hey_yu_mcp.js",
     "mcp": "node engine/hey_yu_mcp.js",
