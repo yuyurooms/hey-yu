@@ -9,7 +9,7 @@ const languageCapabilityCache = new Map();
 
 /**
  * Checks via @lumis-sh/wasm-bundle-full whether a language grammar defines
- * structural AST symbols (@function, @type, @constructor, or @tag) in its native queries.
+ * structural AST symbols in its native highlights, locals, or combined template injections.
  */
 export async function resolveAstLanguagePackage(langId) {
   if (!langId || typeof wasmBundle[langId] !== 'function') return null;
@@ -24,7 +24,9 @@ export async function resolveAstLanguagePackage(langId) {
 
   const hasAstSymbols =
     highlights.includes('@function') ||
-    highlights.includes('@type') ||
+    highlights.includes('@keyword.function') ||
+    highlights.includes('@keyword.type') ||
+    highlights.includes('@type.definition') ||
     highlights.includes('@constructor') ||
     highlights.includes('@tag');
 
@@ -42,6 +44,9 @@ const DEFAULT_IGNORE_PATTERNS = [
   '.claude/',
   '.cursor/',
   '.windsurf/',
+  '.gemini/',
+  '.mcp.json',
+  '.cursorrules',
   '.next/',
   '.nuxt/',
   '.svelte-kit/',
@@ -56,7 +61,9 @@ const DEFAULT_IGNORE_PATTERNS = [
   '.venv/',
   'venv/',
   'target/',
-  '*.min.*'
+  '*.min.*',
+  '.env',
+  '.env.*'
 ];
 
 /**

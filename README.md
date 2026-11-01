@@ -39,7 +39,7 @@ In engineering, **Precision** and **Accuracy** mean two different things — and
 
 | What is inside `hey-yu` | What your AI (Artificial Intelligence) agent gets | Why it matters to you |
 | :--- | :--- | :--- |
-| **AST (Abstract Syntax Tree) Coordinates (`crd_...`)** | **Precision — Exact Code Navigation** | Instead of fuzzy `grep` lines, every function, class, type, and SQL (Structured Query Language) table gets an exact coordinate (like squares on a chessboard: `e4`, `d8`) with exact `[startLine, endLine]` boundaries and an embedded `code_preview`. |
+| **AST (Abstract Syntax Tree) Coordinates (`crd_...`)** | **Precision — Pure Coordinate Dispatcher** | Instead of fuzzy `grep` lines or dumping raw file text, every function, class, type, and SQL (Structured Query Language) table gets an exact coordinate (like squares on a chessboard: `e4`, `d8`) with exact `[startLine, endLine]` boundaries and `coordinate_dispatcher.required_file_spans`. |
 | **Compiler-Accurate Dependency Graph** | **Accuracy — Full Impact Awareness** | Reading `src/tax.ts` alone only shows what `src/tax.ts` imports at the top — it **never** shows who calls `src/tax.ts` from other folders. `hey-yu` returns `incoming_callers`, `imported_callees`, `shared_types`, and `related_coordinates` together with the target. |
 | **Import-Scoped Disambiguation** | **Zero False Homonyms** | If your repo has 15 functions named `validate()` or `save()`, `hey-yu` traces real module imports (`oxc-resolver` + polyglot path resolution) so unrelated modules never get mixed up. |
 | **Honest Silent Pass (`pass: true`)** | **Zero Noise on Normal Tasks** | When you ask general questions, edit `.md` (Markdown) / `.json` (JavaScript Object Notation) files, or run `git status`, `hey-yu` stays **100% silent** and never interferes. |
@@ -84,12 +84,12 @@ WITH HEY-YU (Target coordinate + connected dependencies on Turn 1)
 Prompt: Update calculateTaxCents so tax exemption is supported, and make sure
         nothing in billing breaks.
 
-Agent:  1. Calls hey_yu({ query: "calculateTaxCents", expected_kind: "function" })
+Agent:  1. Calls hey_yu({ query: "calculateTaxCents", expected_kind: "function", project_root: "/path/to/repo" })
 
 hey-yu: [hey-yu] Resolved function "calculateTaxCents" (crd_79c62312) -> src/tax.ts:2-4 in 1.5ms | Dependencies: 1 Callers [settleInvoice (src/billing.ts:3-7)], 1 Shared Types [InvoiceRequest (src/types.ts:1-5)] | Reading Plan: 4 exact spans across 3 files | Related Coordinates: [tenant_invoices (db/schema.sql:1-4)]
 
         Returned in a single payload:
-        • Target Coordinate:  calculateTaxCents -> src/tax.ts (lines 2-4) [with code_preview]
+        • Target Coordinate:  calculateTaxCents -> src/tax.ts (lines 2-4) [coordinate_dispatcher]
         • Incoming Caller:    settleInvoice     -> src/billing.ts (lines 3-7)
         • Shared Contract:    InvoiceRequest    -> src/types.ts (lines 1-5)
         • Companion Schema:   tenant_invoices   -> db/schema.sql (lines 1-4)
@@ -101,15 +101,15 @@ Agent:  2. Sees the target function, its caller, and its shared type before edit
 
 ```mermaid
 flowchart LR
-    Prompt["Your Prompt:<br/>'Update calculateTaxCents'"] --> Resolve["hey-yu resolves target<br/>+ dependency graph"]
-    Resolve --> Target["1. Precision (Target Coordinate):<br/>src/tax.ts (Lines 2-4)<br/>crd_79c62312 + code_preview"]
+    Prompt["Your Prompt:<br/>'Update calculateTaxCents'"] --> Resolve["hey-yu dispatches target<br/>+ dependency graph"]
+    Resolve --> Target["1. Precision (Target Coordinate):<br/>src/tax.ts (Lines 2-4)<br/>crd_79c62312 + required_file_spans"]
     Target --> Deps["2. Accuracy (Connected Dependencies):<br/>- Caller: settleInvoice (src/billing.ts:3-7)<br/>- Shared Type: InvoiceRequest (src/types.ts:1-5)<br/>- SQL (Structured Query Language) Table: tenant_invoices (db/schema.sql:1-4)"]
     Deps --> Result["3. Result:<br/>Agent updates the target and<br/>all connected contracts in 1 pass"]
 ```
 
 ### Reading the 1-line status log in chat
 
-Whenever `hey-yu` resolves an existing symbol (`EXISTING_FOUND`), it outputs one concise line in chat (and records it in `.coordinate/live_audit.log`):
+Whenever `hey-yu` resolves an existing symbol (`EXISTING_FOUND`), it outputs one concise line in chat (and records it in `hey-yu/.coordinate/projects/<project_slug>_<hash>/live_audit.log`):
 
 ```text
 [hey-yu] Resolved function "sendToGateway" (crd_42c8a8c2) -> src/gateway.ts:2-4 in 1.8ms | Dependencies: 1 Callers [authorizeCheckout (src/checkout.ts:3-5)], 1 Shared Types [PaymentIntent (src/types.ts:1-4)] | Reading Plan: 4 exact spans across 3 files
@@ -121,61 +121,56 @@ Whenever `hey-yu` resolves an existing symbol (`EXISTING_FOUND`), it outputs one
 
 ---
 
-## Quick Setup (Non-Destructive & 100% Local)
+## Quick Setup (Install Once Globally — Works Across 30+ Projects)
 
-**Requirements:** [Node.js](https://nodejs.org/) `>= 18.18.0` (Node 20+ recommended), `npm` (Node Package Manager) `>= 9`, and [Git](https://git-scm.com/). The core AST (Abstract Syntax Tree) engine runs on **macOS**, **Linux**, and **Windows** (primary field testing completed on **macOS**; see the Alpha status warning below for **Windows/Linux** & editor hooks).
+**Requirements:** [Node.js](https://nodejs.org/) `>= 18.18.0` (Node 20+ recommended), `npm` (Node Package Manager) `>= 9`, and [Git](https://git-scm.com/). The core AST (Abstract Syntax Tree) engine runs universally on **macOS**, **Linux**, and **Windows** across all AI editors and models using the standard **Global Skill + Rules + MCP (Model Context Protocol) + CLI (Command-Line Interface) fallback** architecture (zero brittle editor hooks, zero files created inside your target projects).
 
 ### Option A: Paste into your AI (Artificial Intelligence) coding agent
 
-Open your AI agent **inside the project folder you want to work on** and send this prompt:
+Send this prompt once from any workspace:
 
-> Install `hey-yu` (Coordinate of Code) locally into this project workspace by running:
-> 1. If `./.hey-yu` does not exist, run: **`git clone https://github.com/yuyurooms/hey-yu.git ./.hey-yu && npm --prefix ./.hey-yu install`**
-> 2. Run: **`node ./.hey-yu/engine/hey_yu_mcp.js init .`** (if your tool uses a sandbox, run with `BypassSandbox: true` so global `~/.gemini/*/mcp_config.json` registration succeeds).
-> 3. Run: **`node ./.hey-yu/engine/hey_yu_mcp.js self-test`** and confirm that all 10 checks pass.
+> Install `hey-yu` (Coordinate of Code) globally on this machine by running:
+> 1. If `~/hey-yu` does not exist, run: **`git clone https://github.com/yuyurooms/hey-yu.git ~/hey-yu && npm --prefix ~/hey-yu install`**
+> 2. Run: **`node ~/hey-yu/engine/hey_yu_mcp.js init`** (if your tool uses a sandbox, run with `BypassSandbox: true` so global `~/.gemini/*/mcp_config.json` registration succeeds).
+> 3. Run: **`node ~/hey-yu/engine/hey_yu_mcp.js self-test`** and confirm that all 11 checks pass.
 
-### Option B: Run from your terminal
+### Option B: Run from your terminal (Once per machine)
 
 ```bash
-# 1. Clone hey-yu and run the built-in self-test (10 automated checks)
-git clone https://github.com/yuyurooms/hey-yu.git
-cd hey-yu
+# 1. Clone hey-yu once and run the built-in self-test (11 automated checks)
+git clone https://github.com/yuyurooms/hey-yu.git ~/hey-yu
+cd ~/hey-yu
 npm install
 npm test
 
-# 2. Initialize hey-yu in any project directory on your machine
-node ./engine/hey_yu_mcp.js init /path/to/your-project
+# 2. Register hey-yu globally (zero files created inside your project folders)
+node ./engine/hey_yu_mcp.js init
 ```
 
-### Safe Setup & One-Command Uninstall
-- **Never overwrites your existing configs:**
-  - In JSON (JavaScript Object Notation) files (`.mcp.json`, `.cursor/mcp.json`, `.claude/config.json`, `.windsurf/mcp_config.json`), `init` merges only the `"hey-yu"` (and `"coordinate-of-code"` alias) server keys and leaves all your other MCP (Model Context Protocol) servers untouched.
-  - In Markdown files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`), `init` writes only inside `<!-- hey-yu-COORDINATE-OF-CODE:START -->` ... `<!-- hey-yu-COORDINATE-OF-CODE:END -->` markers so your own instructions stay intact.
-  - Runtime cache and logs stay inside `.coordinate/` (which automatically creates `.coordinate/.gitignore` so it never appears in `git status`).
+### Centralized Multi-Project Isolation (`30+` Projects, Zero Repo Pollution)
+- **Your project directories stay 100% untouched:** By default, `init` registers the global MCP server and global `SKILL.md` / rules once. It creates **zero** `.coordinate/`, `.agents/`, `.cursor/`, `.claude/`, or `.mcp.json` files inside your project repositories (pass `--local` only if you explicitly want per-repo config files committed to a team repository).
+- **Strict per-project coordinate isolation:** Just like `project_id` in Supabase MCP, every `hey_yu` and `yu_get_project_map` call requires `project_root`. Each project's AST cache (`ast_cache.json`) and logs (`live_audit.log`, `mcp_telemetry.jsonl`) are stored centrally inside `~/hey-yu/.coordinate/projects/<project_slug>_<xxh32_of_project_root>/` and verified against the canonical `project_root` — so coordinates across 30+ projects never mix.
 - **Clean uninstall anytime:**
   ```bash
-  node ./engine/hey_yu_mcp.js uninstall /path/to/your-project
+  node ~/hey-yu/engine/hey_yu_mcp.js uninstall
   ```
-  Removes `.coordinate/`, strips the `hey-yu` markers and MCP (Model Context Protocol) entries, stops any running `hey-yu` background processes, and restores your workspace to its exact prior state.
+  Removes global MCP/Skill entries and centralized `.coordinate/` caches cleanly.
 
-| AI (Artificial Intelligence) Agent / Editor | Status (`v0.1.0-alpha`) | Configured by `init` | Integration |
-| :--- | :--- | :--- | :--- |
-| **Google Antigravity (CLI & IDE)** | **Verified** (macOS + Gemini models) | `~/.gemini/*/mcp_config.json`, `.agents/hooks.json` (`PreToolUse` + `PreInvocation`), `.agents/rules/hey-yu-rule.md`, `.agents/skills/hey-yu/SKILL.md`, `GEMINI.md` | `call_mcp_tool` (`hey-yu`) + automatic `PreToolUse` / `PreInvocation` AST (Abstract Syntax Tree) coordinate & project map dispatch |
-| **Claude Code** | **Alpha** (Config Ready — Needs Field Testing) | `.mcp.json`, `.claude/config.json`, `.claude/settings.json` (`PreToolUse`), `CLAUDE.md` | Direct `hey_yu` MCP (Model Context Protocol) tool + automatic `PreToolUse` AST (Abstract Syntax Tree) coordinate dispatch |
-| **Cursor** | **Alpha** (Config Ready — Needs Field Testing) | `.cursor/mcp.json`, `.cursor/rules/hey-yu.mdc`, `.cursorrules` | Direct `hey_yu` and `yu_get_project_map` MCP (Model Context Protocol) tools |
-| **Windsurf** | **Alpha** (Config Ready — Needs Field Testing) | `.windsurf/mcp_config.json`, `AGENTS.md` | Direct `hey_yu` and `yu_get_project_map` MCP (Model Context Protocol) tools |
-| **Codex / Any MCP Client (`stdio` — Standard Input/Output)** | **Alpha** (Config Ready — Needs Field Testing) | `.mcp.json` (`node /path/to/engine/hey_yu_mcp.js`) | Standard JSON-RPC 2.0 (JavaScript Object Notation Remote Procedure Call) `tools/list` & `tools/call` over `stdio` (Standard Input/Output) |
+| AI (Artificial Intelligence) Agent / Editor | Configured by `init` (Global Default vs. Optional `--local`) | How the Agent Calls `hey-yu` (Dual-Channel like Supabase) |
+| :--- | :--- | :--- |
+| **Google Antigravity (CLI & IDE)** | `~/.gemini/*/mcp_config.json`, `~/.gemini/config/skills/hey-yu/SKILL.md`, `~/.gemini/config/rules/hey-yu-rule.md`, `~/.gemini/GEMINI.md` | **Method 1:** MCP (`hey-yu` -> `hey_yu`, `yu_get_project_map` with `project_root`)<br/>**Method 2:** CLI (`node "<engine>/hey_yu_mcp.js" resolve "<query>" "<project_root>"`) |
+| **Claude Code** | Global skill/rules (or `.mcp.json`, `.claude/config.json`, `CLAUDE.md` with `--local`) | **Method 1:** MCP (`hey_yu`, `yu_get_project_map` with `project_root`)<br/>**Method 2:** CLI (`node "<engine>/hey_yu_mcp.js" resolve "<query>" "<project_root>"`) |
+| **Cursor** | Global skill/rules (or `.cursor/mcp.json`, `.cursor/rules/hey-yu.mdc`, `.cursorrules` with `--local`) | **Method 1:** MCP (`hey_yu`, `yu_get_project_map` with `project_root`)<br/>**Method 2:** CLI (`node "<engine>/hey_yu_mcp.js" resolve "<query>" "<project_root>"`) |
+| **Windsurf** | Global skill/rules (or `.windsurf/mcp_config.json`, `AGENTS.md` with `--local`) | **Method 1:** MCP (`hey_yu`, `yu_get_project_map` with `project_root`)<br/>**Method 2:** CLI (`node "<engine>/hey_yu_mcp.js" resolve "<query>" "<project_root>"`) |
+| **Codex / VS Code / Any Agent** | Global MCP + Skill (or `.mcp.json`, `AGENTS.md` with `--local`) | Standard JSON-RPC 2.0 MCP over `stdio` + direct Node.js CLI fallback |
 
-> [!WARNING]
-> **Honest Alpha Status (`v0.1.0-alpha`) — Core AST Engine vs. Editor Hooks & Sandboxes**
+> [!NOTE]
+> **Why `hey-yu` Uses the Pure Skill + MCP + CLI Architecture (Zero Editor Hooks)**
 >
-> - **What is already 100% solid:** The **core AST (Abstract Syntax Tree) coordinate and dependency graph engine** (`workspace_walker.js`, `cst_indexer.js`, `coord_graph.js`, `coord_resolver.js`) works deterministically right now across 110+ languages.
-> - **What has been battle-tested end-to-end:** Today, we have thoroughly tested `hey-yu` in production workflows on **macOS** inside **Google Antigravity CLI (Command-Line Interface)** and **Google Antigravity IDE (Integrated Development Environment)** powered by **Gemini** models.
-> - **What still needs broader testing (and why):** All nuances we are currently ironing out are strictly related to **editor-specific hooks, MCP (Model Context Protocol) wiring, OS (Operating System) environment differences, and agent permissions** — **not** the coordinate engine itself:
->   1. **Other Editors & Models:** While `init` already generates configuration and hook files for **Claude Code**, **Cursor**, **Windsurf**, **Codex**, and other MCP (Model Context Protocol) clients, we need more time and real-world runs to thoroughly test every editor and model family.
->   2. **Windows & Linux Environments:** Development and primary testing so far have been conducted on **macOS**. Although we use `pathe` for POSIX (Portable Operating System Interface) path normalization, real-world testing on **Windows** (PowerShell / CMD / WSL [Windows Subsystem for Linux] path quoting in hooks) is still needed.
->   3. **Sandboxes, Permissions & Agent Autonomy:** Different agents and user environments run under very different security boundaries. During our own testing, we encountered strict **sandbox restrictions** (blocking global config writes or background processes) and strict hook payload schemas. Across millions of developer setups, agents will behave differently depending on their **sandbox mode, tool-approval permissions, and workspace rules**.
-> - **How you can help the community:** If you run `hey-yu` on **Windows / Linux**, or inside **Claude Code, Cursor, Codex, or Windsurf**, and encounter a hook, permission, or MCP (Model Context Protocol) quirk, please [open an issue on GitHub](https://github.com/yuyurooms/hey-yu/issues) with your OS, editor, and `.coordinate/live_audit.log`. Your feedback directly helps us harden the integration layer for everyone!
+> Inspired by the universal integration pattern used by **Supabase** (`supabase/agent-skills` + MCP Server + CLI), `hey-yu` intentionally registers **zero `PreToolUse` / `PreInvocation` editor hooks**:
+> 1. **Works on every editor, OS, and LLM model:** Editor hooks vary wildly across IDEs, break under sandbox restrictions, and can accidentally intercept unrelated shell commands (`ls *.tsx`, `git status`).
+> 2. **Dual Execution Channel (MCP + CLI Fallback):** When your MCP server is active, your agent calls `hey_yu` and `yu_get_project_map` natively via MCP (passing `project_root`). If `init` was just run mid-session without restarting the IDE (or inside a sandboxed environment), the agent automatically uses the CLI command (`node "<engine>/hey_yu_mcp.js" resolve "<query>" "<project_root>"`) with identical JSON output and `hey-yu/.coordinate/projects/<slug>_<hash>/live_audit.log` telemetry.
+> 3. **Natural Language in Any Human Language:** Just like Supabase, you never need a rigid command syntax. Your AI agent activates `hey-yu` automatically from the Skill/Rules on code tasks, or whenever you mention `hey-yu` naturally (even phonetically or in another language) and translates your intent into code symbols and `semantic_tokens`.
 
 ---
 
@@ -183,60 +178,54 @@ node ./engine/hey_yu_mcp.js init /path/to/your-project
 
 A navigation layer should never get in the way when you are chatting normally with your agent, editing docs, or running terminal commands.
 
-`hey-yu` uses **Honest Silent Pass (`pass: true`)**:
-1. **No Step-1 Prompt Interception:** `hey-yu` never hijacks your user prompt. Your AI (Artificial Intelligence) agent reads your message first and decides whether it needs to inspect code.
-2. **Three Partner-Library Gates (`<1ms`):** Only when the agent invokes a search, directory-listing, or file-reading tool does `hey-yu` check whether the target is an indexed AST (Abstract Syntax Tree) symbol or workspace directory. If not, it returns `pass: true` and stays completely silent.
+`hey-yu` combines **Agent-Driven Invocation** with **Honest Silent Pass (`pass: true`)**:
+1. **Zero Tool Interception:** `hey-yu` never hijacks your user prompt or blocks your terminal/file tools. Your AI (Artificial Intelligence) agent reads your message (and `SKILL.md` / rules) and invokes `hey-yu` only when locating or modifying source-code symbols or architecture.
+2. **Partner-Library Competence & Graph Resolution (`<2ms`):** When invoked via MCP (`hey_yu`) or CLI (`resolve`), `hey-yu` incrementally syncs modified files via `mtimeMs:size` in that project's isolated `.coordinate/projects/<slug>_<hash>/` cache and resolves the exact AST declaration and multi-hop dependency graph. If a queried symbol does not exist yet (e.g., brand-new code you are creating), it returns `pass: true` (`status: "SILENT_PASS"`).
 
 ```text
-[1] YOU SEND A PROMPT
+[1] YOU SEND A PROMPT (IN ANY HUMAN LANGUAGE)
  │   ├─ General chat / "Run git status" / "Edit README.md"
- │   └─ "Update calculateTaxCents in the billing module"
+ │   └─ "Update calculateTaxCents in the billing module" (or "хей ю проверь валидацию")
  ▼
-[2] YOUR AI (Artificial Intelligence) AGENT PROCESSES THE PROMPT NATIVELY (No Step-1 interception)
+[2] YOUR AI AGENT PROCESSES THE PROMPT + GLOBAL SKILL (`SKILL.md` / Rules)
  │   │
- │   ├──► Case A: No code lookup needed
- │   │     └──► Agent replies immediately (hey-yu does 0 work, 0 output)
+ │   ├──► Case A: General chat, docs, or terminal ops
+ │   │     └──► Agent replies or runs commands directly (hey-yu is not called; 0 overhead)
  │   │
- │   └──► Case B: Agent invokes a tool (`hey_yu`, `grep_search`, `find_by_name`, `list_dir`, `read_file`, `run_command`)
- │         ▼
-[3] HEY-YU SILENT AST (Abstract Syntax Tree) OBSERVER (`PreToolUse` + `PreInvocation` Partner-Library Gates)
+ │   └──► Case B: Code navigation, refactoring, or architecture task
+ │         └──► Agent translates your intent into `query` + `semantic_tokens`, passes `project_root`, and invokes `hey-yu`:
+ │               • Method 1 (MCP Tool): `hey_yu({ query: "calculateTaxCents", semantic_tokens: ["tax", "invoice"], expected_kind: "function", project_root: "/path/to/project" })`
+ │               • Method 2 (CLI Fallback): `node "<engine>/hey_yu_mcp.js" resolve "calculateTaxCents" "/path/to/project" --kind=function`
+ ▼
+[3] HEY-YU AST COORDINATE & DEPENDENCY ENGINE (`web-tree-sitter` + `@orama/orama` + `oxc-resolver` + `graphology`)
            │
-           ├─► Gate 1: Workspace Boundary (`pathe` + `ignore`)
-           │    └─ Path is outside projectRoot or ignored by `.gitignore` / `node_modules`?
-           │       └──► 100% SILENT PASS (`{"decision": "allow"}`)
+           ├─► Brand-new symbol not in codebase (`pass: true`, `status: "SILENT_PASS"`)
+           │    └──► Agent proceeds directly to create the new code
            │
-           ├─► Gate 2: Tree-sitter AST (Abstract Syntax Tree) Competence (`@lumis-sh/lumis` + `@lumis-sh/wasm-bundle-full`)
-           │    └─ Target is a doc/config file (`.md`, `.json`, `.txt`, `.env`) or CLI (Command-Line Interface) command (`git`, `npm`, `docker`)?
-           │       └──► 100% SILENT PASS (`{"decision": "allow"}`)
+           ├─► Architecture map request (`yu_get_project_map` or `map`)
+           │    └──► RETURNS WORKSPACE AST COORDINATE MAP (`PROJECT_MAP`):
+           │         └─ Up to 10 architectural layers × 15 graph-weighted files + top 12 connectivity hubs
            │
-           └─► Gate 3: AST (Abstract Syntax Tree) Coordinate & Dependency Resolution (`web-tree-sitter` + `@orama/orama` + `oxc-resolver` + `graphology`)
-                ├─► Symbol does not exist in the codebase (`pass: true`)
-                │    └──► 100% SILENT PASS (`{"decision": "allow"}`)
-                │
-                ├─► Broad directory scan (`list_dir` / `ls` / `find`)
-                │    └──► DISPATCHES WORKSPACE AST COORDINATE MAP (`PROJECT_MAP`):
-                │         └─ Up to 10 architectural layers × 15 graph-weighted files + top 12 connectivity hubs
-                │
-                └─► Existing symbol matched (`EXISTING_FOUND`)
-                     └──► DISPATCHES TARGET COORDINATE + DEPENDENCIES:
-                          ├─ Precision: Coordinate (`crd_...`), `file:start-end` & `code_preview`
-                          ├─ Accuracy:  Dependencies (`incoming_callers`, `imported_callees`, `shared_types`)
-                          ├─ Companion: `related_coordinates` (SQL [Structured Query Language] tables / DI [Dependency Injection] implementations)
-                          └─ 1-line status in chat: `[hey-yu] Resolved ...`
+           └─► Existing symbol matched (`EXISTING_FOUND`)
+                └──► DISPATCHES TARGET COORDINATE + DEPENDENCIES IN 1 STEP:
+                     ├─ Precision: Coordinate (`crd_...`), `kind`, `name`, `file:start-end` & `coordinate_dispatcher.required_file_spans`
+                     ├─ Accuracy:  Dependencies (`incoming_callers`, `imported_callees`, `shared_types`)
+                     ├─ Companion: `related_coordinates` (SQL [Structured Query Language] tables / DI [Dependency Injection] implementations)
+                     └─ 1-line status in chat & `hey-yu/.coordinate/projects/<slug>_<hash>/live_audit.log`: `[hey-yu] Resolved ...`
 ```
 
 ---
 
 ## Inside the 5-File Engine & 9 Open-Source Building Blocks
 
-Just as modern developer platforms combine proven open-source foundations into a cohesive experience, `hey-yu` integrates nine specialized open-source libraries into **five clean JavaScript files** (`~3,300` LOC [Lines of Code] total) in [`engine/`](./engine/):
+Just as modern developer platforms combine proven open-source foundations into a cohesive experience, `hey-yu` integrates nine specialized open-source libraries into **five clean JavaScript files** (`~2,900` LOC [Lines of Code] total) in [`engine/`](./engine/):
 
 ```mermaid
 flowchart LR
     M1["1. workspace_walker.js<br/>Discovers source files"] --> M2["2. cst_indexer.js<br/>Parses CST (Concrete Syntax Tree) coordinates, calls & types"]
     M2 --> M3["3. coord_graph.js<br/>Wires imports & multi-hop AST (Abstract Syntax Tree) edges"]
-    M3 --> M4["4. coord_resolver.js<br/>Caches, syncs edits & resolves queries"]
-    M4 --> M5["5. hey_yu_mcp.js<br/>MCP (Model Context Protocol) server, hooks, init & self-test"]
+    M3 --> M4["4. coord_resolver.js<br/>Caches per project, syncs edits & resolves queries"]
+    M4 --> M5["5. hey_yu_mcp.js<br/>MCP (Model Context Protocol) server, CLI, Global Skill/Rules init & self-test"]
 ```
 
 | File | Role | Responsibility |
@@ -244,8 +233,8 @@ flowchart LR
 | **[`engine/workspace_walker.js`](./engine/workspace_walker.js)** | **Workspace Scout** | Walks the project directory respecting root and nested `.gitignore` rules (`ignore`), skips binaries and files `>1MB` (Megabyte), and detects each file's Tree-sitter grammar via `@lumis-sh/lumis`. |
 | **[`engine/cst_indexer.js`](./engine/cst_indexer.js)** | **Polyglot CST (Concrete Syntax Tree) Indexer** | Parses files in WebAssembly (`web-tree-sitter`), executes official `highlights.scm` and `injections.scm` queries (including embedded `<script>` or SQL [Structured Query Language] inside Vue/Svelte/host files), extracts exact declaration spans, calls, types, literals, and imports, and immediately frees WASM (WebAssembly) heap memory (`tree.delete()`). |
 | **[`engine/coord_graph.js`](./engine/coord_graph.js)** | **Dependency Graph Builder** | Resolves cross-file imports (`oxc-resolver` + polyglot module suffixes), builds the directed `graphology` graph (`IMPORTS_FILE`, `CALLS_COORD`, `USES_TYPE`), and executes inbound/outbound BFS (Breadth-First Search) walks (`bfsFromNode`) — **2 hops inbound** for callers and **3 hops outbound** for callees/types. |
-| **[`engine/coord_resolver.js`](./engine/coord_resolver.js)** | **Incremental Cache & Resolver** | Persists the parsed graph snapshot to `.coordinate/ast_cache.json`, checks `mtimeMs:size` before every query so only modified files are re-parsed, runs BM25 (Best Matching 25 ranking algorithm) search (`@orama/orama`), and builds the dependency reading plan. |
-| **[`engine/hey_yu_mcp.js`](./engine/hey_yu_mcp.js)** | **MCP (Model Context Protocol) Server & CLI (Command-Line Interface) Lifecycle** | Exposes `hey_yu` and `yu_get_project_map` over MCP (Model Context Protocol) `stdio` (Standard Input/Output), manages `init`, `uninstall`, and `self-test`, and runs the silent `PreToolUse` / `PreInvocation` observer hooks. |
+| **[`engine/coord_resolver.js`](./engine/coord_resolver.js)** | **Incremental Cache & Resolver** | Persists each project's parsed graph snapshot to `hey-yu/.coordinate/projects/<slug>_<hash>/ast_cache.json`, checks `mtimeMs:size` before every query so only modified files are re-parsed, runs BM25 (Best Matching 25 ranking algorithm) search (`@orama/orama`), and builds the dependency reading plan. |
+| **[`engine/hey_yu_mcp.js`](./engine/hey_yu_mcp.js)** | **MCP (Model Context Protocol) Server & CLI (Command-Line Interface)** | Exposes `hey_yu` and `yu_get_project_map` over MCP `stdio` and direct CLI commands (`resolve`, `map`), and manages `init` (Global MCP + `SKILL.md` + Rules provisioning), `uninstall`, and `self-test`. |
 
 ### The 9 Open-Source Partner Libraries
 
@@ -256,7 +245,7 @@ flowchart LR
 | **`oxc-resolver`** | Native Rust / N-API (Node-API native addon interface) module resolution (`tsconfig.json` `paths`, `package.json` `exports`, barrel `index` files) | **Accuracy:** Compiler-accurate import tracing across TypeScript/JavaScript monorepos and path aliases (`@/services/...`). |
 | **`graphology`** & **`graphology-traversal`** | Directed property graph (`DirectedGraph`) and BFS (Breadth-First Search) traversal (`bfsFromNode`) | **Accuracy:** Multi-hop dependency resolution for **`incoming_callers`**, **`imported_callees`**, and **`shared_types`**. |
 | **`@orama/orama`** | In-memory BM25 (Best Matching 25) full-text search index with field `boost` weights | **Precision & Cross-Language Links:** Fast disambiguation across symbol names, split identifier words, error literals, and companion SQL (Structured Query Language) tables (`related_coordinates`). |
-| **`xxhash-wasm`** | WebAssembly `xxh32` (32-bit xxHash) hashing (`h32ToString`) | Deterministic 8-hex-character Coordinate IDs (Identifiers, `crd_...`) and structural AST (Abstract Syntax Tree) Merkle hashes (`merkle_hash`). |
+| **`xxhash-wasm`** | WebAssembly `xxh32` (32-bit xxHash) hashing (`h32ToString`) | Deterministic 8-hex-character Coordinate IDs (Identifiers, `crd_...`), per-project storage hashes, and structural AST (Abstract Syntax Tree) Merkle hashes (`merkle_hash`). |
 | **`ignore`** | Gitignore-compliant path filter | Honors root and nested `.gitignore` files automatically. |
 | **`pathe`** | Cross-platform POSIX (Portable Operating System Interface) path normalization | Guarantees identical `/` relative paths and coordinates on **macOS**, **Linux**, and **Windows**. |
 | **`zod`** | Runtime schema validation (`safeParse`) & JSON (JavaScript Object Notation) Schema generation (`z.toJSONSchema`) | Strict validation for MCP (Model Context Protocol) tool calls (`hey_yu`, `yu_get_project_map`). |
@@ -286,10 +275,10 @@ We tested `hey-yu` in a controlled paired A/B (Control vs. Treatment) run (`n = 
 
 ## Platform Notes & Direct API (Application Programming Interface) Usage
 
-- **macOS, Linux & Windows:** Runs out of the box on Node.js `>= 18.18.0`. First-run indexing takes a couple of seconds and writes `.coordinate/ast_cache.json`; subsequent lookups incremental-sync via `mtimeMs:size` in `<1ms` and resolve from memory.
-- **Monorepos:** Initialize `hey-yu` inside the specific package or service directory where you open your editor (`apps/web`, `services/billing`) so each service maintains a focused `.coordinate/` cache and import graph.
+- **macOS, Linux & Windows:** Runs out of the box on Node.js `>= 18.18.0`. First-run indexing for any project takes a couple of seconds and writes `hey-yu/.coordinate/projects/<slug>_<hash>/ast_cache.json`; subsequent lookups incremental-sync via `mtimeMs:size` in `<1ms` and resolve from memory.
+- **30+ Projects & Monorepos:** Pass any project or service directory (`apps/web`, `services/billing`, etc.) as `project_root`; `hey-yu` automatically maintains an isolated cache and dependency graph per `project_root` inside `hey-yu/.coordinate/projects/`.
 - **Inspecting the audit log or calling from Node.js:**
-  Check `.coordinate/live_audit.log` in your project to see every resolved coordinate and dependency chain, or import `CoordinateResolver` directly:
+  Check `hey-yu/.coordinate/projects/<slug>_<hash>/live_audit.log` to see every resolved coordinate and dependency chain for that project, or import `CoordinateResolver` directly:
 
 ```javascript
 import { CoordinateResolver } from './engine/coord_resolver.js';
@@ -305,7 +294,7 @@ const hit = await resolver.resolve({
 console.log(hit.user_status_line);
 ```
 
-If you run into an edge case with a specific language grammar or import pattern, open an issue in [GitHub Issues](https://github.com/yuyurooms/hey-yu/issues) with the relevant line from `.coordinate/live_audit.log`.
+If you run into an edge case with a specific language grammar or import pattern, open an issue in [GitHub Issues](https://github.com/yuyurooms/hey-yu/issues) with the relevant line from `live_audit.log`.
 
 ---
 

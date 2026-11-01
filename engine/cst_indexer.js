@@ -52,15 +52,19 @@ async function loadGrammarAndQueries(langId, wasmUrl, languagePackage) {
   const langDef = languages[langId] || Object.values(languages)[0] || {};
 
   let hlQuery = null;
+  let locQuery = null;
   let injQuery = null;
   try {
     if (langDef.highlights) hlQuery = new Query(lang, langDef.highlights);
   } catch (_) {}
   try {
+    if (langDef.locals) locQuery = new Query(lang, langDef.locals);
+  } catch (_) {}
+  try {
     if (langDef.injections) injQuery = new Query(lang, langDef.injections);
   } catch (_) {}
 
-  const queries = { hlQuery, injQuery };
+  const queries = { hlQuery, locQuery, injQuery };
   languageCache.set(langId, lang);
   queryCache.set(langId, queries);
   return { lang, queries };
@@ -68,32 +72,45 @@ async function loadGrammarAndQueries(langId, wasmUrl, languagePackage) {
 
 function unquoteLiteral(raw) {
   const t = (raw || '').trim();
-  if (t.length >= 2 && (t[0] === '"' || t[0] === "'" || t[0] === '`') && t[t.length - 1] === t[0]) {
+  if (
+    t.length >= 2 &&
+    ((t[0] === '"' && t.endsWith('"')) ||
+      (t[0] === "'" && t.endsWith("'")) ||
+      (t[0] === '`' && t.endsWith('`')) ||
+      (t[0] === '<' && t.endsWith('>')))
+  ) {
     return t.slice(1, -1);
   }
   return t;
 }
 
 /**
- * Pure Tree-sitter CST structural declaration resolver:
- * 1. Verifies that `idNode` is the `name` or `declarator` field of its parent CST node.
- * 2. Climbs enclosing declarator/reference wrappers (e.g. C++ function_declarator, Go type_spec,
- *    SQL object_reference -> create_table, JS export_statement -> lexical_declaration).
- * 3. Confirms the outer node is a structural declaration/definition with a body, value, or declaration grammar rule.
+ * Pure Tree-sitter CST + native .scm (`highlights.scm` & `locals.scm`) declaration resolver:
+ * 1. Excludes nodes inside import statements or import/export specifiers.
+ * 2. Supports macro-style declarations (e.g. Elixir `def` / `defmodule`) tagged by `@keyword.function` / `@_definition`.
+ * 3. Climbs declarator/reference wrappers (e.g. C++ `function_declarator` / `class_specifier`, Go `type_spec`,
+ *    SQL `object_reference` -> `create_table`, JS `export_statement` -> `lexical_declaration`).
+ * 4. Excludes expression literals (e.g. Rust `struct_expression` `Session { id: 1 }`).
  */
-function findEnclosingDeclarationNode(idNode, rootNode) {
+function findEnclosingDeclarationNode(idNode, rootNode, declCallNodes) {
   let curr = idNode.parent;
   if (!curr || curr.id === rootNode.id) return null;
-  if (curr.type.includes('import') || curr.type.includes('include') || curr.type.includes('specifier')) {
-    return null;
+
+  // Handle macro-based declarations (e.g. Elixir `defmodule MyApp.Auth do` / `def login(user) do`)
+  // where `highlights.scm` tags the macro target with `@keyword.function` or `@_definition`.
+  let anc = curr;
+  while (anc && anc.id !== rootNode.id) {
+    if (declCallNodes.has(anc.id)) {
+      return anc;
+    }
+    if (anc.type === 'do_block' || anc.type === 'block') break;
+    anc = anc.parent;
   }
 
-  // Handle qualified function declarations (e.g. Lua `function M.foo()` where idNode is inside dot_index_expression)
+  // Handle qualified function declarations (e.g. Lua `function M.foo()`, C++ `void Foo::bar()`)
   if (
     (curr.type.includes('index_expression') || curr.type.includes('field_expression')) &&
-    curr.parent &&
-    (curr.parent.childForFieldName('name')?.id === curr.id ||
-      curr.parent.childForFieldName('declarator')?.id === curr.id)
+    curr.parent
   ) {
     curr = curr.parent;
   } else {
@@ -105,28 +122,25 @@ function findEnclosingDeclarationNode(idNode, rootNode) {
         curr.type.includes('declaration') ||
         curr.type.includes('definition') ||
         curr.type.includes('signature') ||
-        curr.type === 'object_reference' ||
         curr.type.startsWith('create_');
       if (!isDirectDeclParent) return null;
-      // Ensure idNode is the primary identifier of this declaration (not a return type after parameters)
       const firstIdChild = curr.namedChildren.find(
-        c => c.type.includes('identifier') || c.type === 'name'
+        c => c.type.includes('identifier') || c.type === 'name' || c.type.endsWith('_name')
       );
       if (firstIdChild && firstIdChild.id !== idNode.id) return null;
     }
   }
 
-  // 1. Climb inner declarator / signature / object_reference / spec wrappers to the declaration node
+  // 1. Climb inner declarator / signature / type_spec / object_reference wrappers to the declaration node
   while (curr.parent && curr.parent.id !== rootNode.id) {
     const p = curr.parent;
-    if (p.type.includes('import') || p.type.includes('include') || p.type.includes('specifier')) return null;
     if (curr.type === 'object_reference' && p.type.startsWith('create_')) {
       curr = p;
       continue;
     }
     if (
-      curr.type.includes('signature') &&
-      (p.type.includes('signature') || p.type.includes('definition') || p.type.includes('declaration'))
+      (curr.type.includes('signature') || curr.type.includes('binding') || curr.type === 'type_spec') &&
+      (p.type.includes('definition') || p.type.includes('declaration'))
     ) {
       curr = p;
       continue;
@@ -139,6 +153,11 @@ function findEnclosingDeclarationNode(idNode, rootNode) {
     break;
   }
 
+  // Reject expression literals (e.g. Rust `struct_expression` `Session { id: 1 }`)
+  if (curr.type.includes('expression') && !curr.type.includes('function')) {
+    return null;
+  }
+
   // 2. Verify the declaration node itself has a structural body/value/declaration rule
   const hasStructure =
     Boolean(curr.childForFieldName('body')) ||
@@ -146,14 +165,12 @@ function findEnclosingDeclarationNode(idNode, rootNode) {
     curr.type.includes('declaration') ||
     curr.type.includes('definition') ||
     curr.type.includes('item') ||
-    (curr.type.includes('spec') && !curr.type.includes('specifier')) ||
     curr.type.startsWith('create_');
   if (!hasStructure) return null;
 
   // 3. Expand to outer export / decorated definition wrapper via CST field (`declaration` / `definition`)
   while (curr.parent && curr.parent.id !== rootNode.id) {
     const p = curr.parent;
-    if (p.type.includes('import') || p.type.includes('include') || p.type.includes('specifier')) return null;
     if (p.type.includes('export') && p.childForFieldName('source')) return null;
     const outerField = p.childForFieldName('declaration') || p.childForFieldName('definition');
     if (outerField && outerField.id === curr.id) {
@@ -166,73 +183,219 @@ function findEnclosingDeclarationNode(idNode, rootNode) {
   return curr;
 }
 
-function extractTopLevelImports(stmt) {
-  const argNode = stmt.childForFieldName('argument');
-  const srcNode =
-    stmt.childForFieldName('source') ||
-    stmt.childForFieldName('module_name') ||
-    stmt.childForFieldName('path') ||
-    argNode?.childForFieldName('path') ||
-    argNode;
+/**
+ * Extracts imports across 100+ languages using `@lumis-sh/wasm-bundle-full` native
+ * `highlights.scm` (`@keyword.import`, `@include`, `@module`, `@string`) and
+ * `locals.scm` (`@local.definition.import`) captures.
+ */
+function extractNativeImports(rootNode, hlCaps, locCaps) {
+  const capsByNodeId = new Map();
+  for (const c of hlCaps) {
+    let set = capsByNodeId.get(c.node.id);
+    if (!set) {
+      set = new Set();
+      capsByNodeId.set(c.node.id, set);
+    }
+    set.add(c.name);
+  }
 
-  const isImport =
-    Boolean(srcNode) ||
-    stmt.type.includes('import') ||
-    stmt.type.includes('include');
-  if (!isImport) return [];
+  const importTriggerNodes = [];
+  const keywordTriggerIds = new Set();
+  for (const c of hlCaps) {
+    if (c.name.includes('import') || c.name.includes('include')) {
+      importTriggerNodes.push(c.node);
+      if (c.name.startsWith('keyword') || c.name === 'include' || c.name === '_include') {
+        keywordTriggerIds.add(c.node.id);
+      }
+    } else if (c.name === 'function.builtin' && c.node.parent?.type?.includes('call')) {
+      const hasStringArg = hlCaps.some(
+        s =>
+          (s.name === 'string' || s.name === 'string.special.path') &&
+          s.node.startIndex > c.node.endIndex &&
+          s.node.endIndex <= c.node.parent.endIndex
+      );
+      if (hasStringArg) {
+        importTriggerNodes.push(c.node);
+        keywordTriggerIds.add(c.node.id);
+      }
+    } else if (c.name === 'keyword' && c.node.parent?.type === 'call') {
+      const nodeCaps = capsByNodeId.get(c.node.id);
+      const isMacroDirective =
+        nodeCaps?.has('function.call') &&
+        !nodeCaps?.has('keyword.function') &&
+        !nodeCaps?.has('_definition');
+      const hasModuleArg = hlCaps.some(
+        m =>
+          m.name === 'module' &&
+          m.node.startIndex > c.node.endIndex &&
+          m.node.endIndex <= c.node.parent.endIndex
+      );
+      if (isMacroDirective && hasModuleArg) {
+        importTriggerNodes.push(c.node);
+        keywordTriggerIds.add(c.node.id);
+      }
+    }
+  }
+  for (const c of locCaps) {
+    if (c.name.includes('import')) {
+      importTriggerNodes.push(c.node);
+    }
+  }
 
-  // Handle grouped import declarations (e.g. Go `import ( "a"; "b" )`) where children carry `path` fields
-  if (!srcNode) {
-    const multi = [];
-    function collectSpecs(n) {
-      const pNode = n.childForFieldName('path');
-      if (pNode) {
-        const from = unquoteLiteral(pNode.text);
-        if (from) {
-          multi.push({
-            from,
-            symbols: [],
-            line: n.startPosition.row + 1,
-            end_line: n.endPosition.row + 1
+  const stmtMap = new Map();
+  for (const trig of importTriggerNodes) {
+    let curr = trig;
+    while (curr.parent && curr.parent.id !== rootNode.id) {
+      const p = curr.parent;
+      if (p.type.includes('package')) {
+        curr = null;
+        break;
+      }
+      if (p.type.includes('export') && !p.childForFieldName('source')) {
+        curr = null;
+        break;
+      }
+      if (
+        p.id === rootNode.id ||
+        p.type === 'declaration_list' ||
+        p.type === 'do_block' ||
+        p.type === 'block' ||
+        p.type === 'body_statement' ||
+        p.type === 'program' ||
+        p.type === 'source_file' ||
+        p.type === 'module' ||
+        p.type === 'chunk' ||
+        p.type === 'translation_unit'
+      ) {
+        break;
+      }
+      curr = p;
+    }
+    if (curr && !curr.type.includes('package')) {
+      stmtMap.set(curr.id, curr);
+    }
+  }
+
+  const results = [];
+  const importSpans = [];
+
+  for (const stmt of stmtMap.values()) {
+    importSpans.push({ startIndex: stmt.startIndex, endIndex: stmt.endIndex });
+    const subHl = hlCaps.filter(
+      c => c.node.startIndex >= stmt.startIndex && c.node.endIndex <= stmt.endIndex
+    );
+    const subLoc = locCaps.filter(
+      c => c.node.startIndex >= stmt.startIndex && c.node.endIndex <= stmt.endIndex
+    );
+
+    const stringNodes = [];
+    for (const c of subHl) {
+      if (c.name === 'string' || c.name === 'string.special.path') {
+        const val = unquoteLiteral(c.node.text);
+        if (
+          val &&
+          val !== '"' &&
+          val !== "'" &&
+          !stringNodes.some(s => s.val === val && s.line === c.node.startPosition.row + 1)
+        ) {
+          stringNodes.push({
+            val,
+            node: c.node,
+            line: c.node.startPosition.row + 1,
+            end_line: c.node.endPosition.row + 1
           });
         }
-        return;
       }
-      for (const c of n.namedChildren) collectSpecs(c);
     }
-    collectSpecs(stmt);
-    if (multi.length > 0) return multi;
+
+    const defImports = [
+      ...new Set(
+        subLoc
+          .filter(c => c.name === 'local.definition.import' || c.name === 'local.definition.var')
+          .map(c => c.node.text.trim())
+          .filter(Boolean)
+      )
+    ];
+
+    if (stringNodes.length > 1) {
+      for (const sn of stringNodes) {
+        results.push({ from: sn.val, symbols: [], line: sn.line, end_line: sn.end_line });
+      }
+      continue;
+    }
+
+    let from = stringNodes[0]?.val || null;
+    const srcField =
+      stmt.childForFieldName('module_name') ||
+      stmt.childForFieldName('source') ||
+      stmt.childForFieldName('path') ||
+      stmt.childForFieldName('name');
+
+    if (!from && srcField) {
+      from = unquoteLiteral(srcField.text);
+    }
+
+    if (!from) {
+      const modCaps = subHl.filter(
+        c =>
+          !keywordTriggerIds.has(c.node.id) &&
+          (c.name === 'module' || c.name === 'namespace' || c.name === 'type' || c.name === '_import')
+      );
+      if (modCaps.length > 0) {
+        let best = modCaps[0].node;
+        while (
+          best.parent &&
+          best.parent.id !== stmt.id &&
+          !best.parent.type.includes('argument') &&
+          !best.parent.type.includes('header') &&
+          !best.parent.children.some(ch => keywordTriggerIds.has(ch.id))
+        ) {
+          best = best.parent;
+        }
+        from = unquoteLiteral(best.text).trim();
+      } else if (defImports.length > 0) {
+        from = defImports[0];
+      }
+    }
+
+    if (from) {
+      const syms = [...defImports];
+      for (const c of subHl) {
+        if (keywordTriggerIds.has(c.node.id)) continue;
+        if (c.name === 'type' || c.name === 'module' || c.name === 'variable') {
+          const t = c.node.text.trim();
+          if (
+            t &&
+            t !== from &&
+            (!stringNodes[0] ||
+              c.node.startIndex < stringNodes[0].node.startIndex ||
+              c.node.endIndex > stringNodes[0].node.endIndex) &&
+            (!srcField ||
+              c.node.startIndex < srcField.startIndex ||
+              c.node.endIndex > srcField.endIndex)
+          ) {
+            if (!syms.includes(t)) syms.push(t);
+          }
+        }
+      }
+      if (!stringNodes[0]) {
+        const tailSeg = pathe.basename(
+          from.replaceAll('::', '/').replaceAll('.', '/').replaceAll('\\', '/')
+        );
+        if (tailSeg && tailSeg !== from && tailSeg !== '*' && !syms.includes(tailSeg)) {
+          syms.push(tailSeg);
+        }
+      }
+      results.push({
+        from,
+        symbols: syms.filter(s => s !== from),
+        line: stmt.startPosition.row + 1,
+        end_line: stmt.endPosition.row + 1
+      });
+    }
   }
 
-  let from = srcNode ? unquoteLiteral(srcNode.text) : null;
-  const symbols = [];
-
-  function visit(n) {
-    if (!from && (n.type.includes('string') || n.type.includes('identifier') || n.type.includes('name'))) {
-      from = unquoteLiteral(n.text);
-      return;
-    }
-    if (
-      n.namedChildCount === 0 &&
-      (n.type.includes('identifier') || n.type.includes('name')) &&
-      (!srcNode || n.startIndex < srcNode.startIndex || n.endIndex > srcNode.endIndex)
-    ) {
-      const sym = n.text.trim();
-      if (sym && !symbols.includes(sym)) symbols.push(sym);
-    }
-    for (const c of n.namedChildren) visit(c);
-  }
-
-  visit(stmt);
-  if (!from) return [];
-  return [
-    {
-      from,
-      symbols,
-      line: stmt.startPosition.row + 1,
-      end_line: stmt.endPosition.row + 1
-    }
-  ];
+  return { imports: results, importSpans };
 }
 
 /**
@@ -265,14 +428,6 @@ export async function indexFileCst(fileEntry) {
     let minImportLine = Infinity;
     let maxImportLine = 0;
 
-    for (const child of rootNode.namedChildren) {
-      for (const imp of extractTopLevelImports(child)) {
-        imports.push(imp);
-        if (imp.line < minImportLine) minImportLine = imp.line;
-        if (imp.end_line > maxImportLine) maxImportLine = imp.end_line;
-      }
-    }
-
     const parseUnits = [{ tree, rootNode, queries, unitLangId: langId }];
 
     if (queries.injQuery) {
@@ -300,13 +455,6 @@ export async function indexFileCst(fileEntry) {
           ]
         });
         allocatedTrees.push(subTree);
-        for (const child of subTree.rootNode.namedChildren) {
-          for (const imp of extractTopLevelImports(child)) {
-            imports.push(imp);
-            if (imp.line < minImportLine) minImportLine = imp.line;
-            if (imp.end_line > maxImportLine) maxImportLine = imp.end_line;
-          }
-        }
         parseUnits.push({ tree: subTree, rootNode: subTree.rootNode, queries: injLoaded.queries, unitLangId: injLang });
       }
     }
@@ -315,72 +463,88 @@ export async function indexFileCst(fileEntry) {
     const calls = [];
     const referencedTypes = [];
     const literals = [];
-    const landmarks = [];
 
     for (const unit of parseUnits) {
-      for (const cap of unit.queries.hlQuery.captures(unit.rootNode)) {
+      const hlCaps = unit.queries.hlQuery ? unit.queries.hlQuery.captures(unit.rootNode) : [];
+      const locCaps = unit.queries.locQuery ? unit.queries.locQuery.captures(unit.rootNode) : [];
+
+      const { imports: unitImports, importSpans } = extractNativeImports(unit.rootNode, hlCaps, locCaps);
+      for (const imp of unitImports) {
+        imports.push(imp);
+        if (imp.line < minImportLine) minImportLine = imp.line;
+        if (imp.end_line > maxImportLine) maxImportLine = imp.end_line;
+      }
+
+      const declCallNodes = new Set();
+      const declMacroKeywordNodes = new Set();
+      for (const cap of hlCaps) {
+        if (
+          (cap.name === '_definition' || cap.name === 'keyword.function') &&
+          cap.node.parent?.type === 'call'
+        ) {
+          declCallNodes.add(cap.node.parent.id);
+          declMacroKeywordNodes.add(cap.node.id);
+        }
+      }
+
+      for (const cap of hlCaps) {
         const { name: capName, node } = cap;
+        if (declMacroKeywordNodes.has(node.id)) continue;
+        const isInImport = importSpans.some(
+          s => node.startIndex >= s.startIndex && node.endIndex <= s.endIndex
+        );
+        if (isInImport) continue;
+
         const line = node.startPosition.row + 1;
         const endLine = node.endPosition.row + 1;
+        const isMacroModuleDef =
+          capName === 'module' && node.parent && declCallNodes.has(node.parent.parent?.id);
 
         if (
           capName === 'function' ||
           capName === 'function.method' ||
+          capName === 'function.macro' ||
           capName === 'constructor' ||
           capName === 'type' ||
-          capName === 'type.definition'
+          capName === 'type.definition' ||
+          capName === 'class' ||
+          isMacroModuleDef
         ) {
-          const declNode = findEnclosingDeclarationNode(node, unit.rootNode);
-          if (declNode) {
-            const symName = node.text.trim();
+          const declNode = findEnclosingDeclarationNode(node, unit.rootNode, declCallNodes);
+          const symName = node.text.trim();
+          const isSingleToken = Boolean(symName && !symName.includes(' ') && !symName.includes('\n') && !symName.includes('\t'));
+          if (declNode && isSingleToken) {
             const sLine = declNode.startPosition.row + 1;
             const eLine = declNode.endPosition.row + 1;
             const key = `${symName}:${sLine}:${eLine}`;
             const kind =
               capName === 'function.method'
                 ? 'method'
-                : capName.startsWith('type') || capName === 'constructor' || declNode.type.includes('table')
+                : capName.startsWith('type') ||
+                    capName === 'class' ||
+                    capName === 'constructor' ||
+                    isMacroModuleDef ||
+                    declNode.type.includes('table')
                   ? 'type'
                   : 'function';
             if (!symbolsByKey.has(key) || kind === 'function') {
               symbolsByKey.set(key, { name: symName, kind, declNode, startLine: sLine, endLine: eLine });
             }
-          } else if (capName.startsWith('type') || node.parent?.type === 'object_reference') {
-            referencedTypes.push({ name: node.text.trim(), line });
-          } else {
-            calls.push({ name: node.text.trim(), line });
+          } else if (isSingleToken) {
+            if (capName.startsWith('type') || capName === 'class' || node.parent?.type === 'object_reference') {
+              referencedTypes.push({ name: symName, line });
+            } else {
+              calls.push({ name: symName, line });
+            }
           }
         } else if (capName === 'function.call' || capName === 'function.method.call') {
-          calls.push({ name: node.text.trim(), line });
+          const callName = node.text.trim();
+          if (callName && !callName.includes(' ') && !callName.includes('\n') && !callName.includes('\t')) {
+            calls.push({ name: callName, line });
+          }
         } else if (capName === 'string') {
           const text = unquoteLiteral(node.text);
           if (text) literals.push({ text, line, endLine });
-        } else if (capName.startsWith('markup.heading') || (capName === 'none' && node.parent?.type?.includes('element'))) {
-          const text = node.text.trim();
-          if (text) {
-            literals.push({ text, line, endLine });
-            landmarks.push({
-              kind: capName.startsWith('markup.heading') ? 'heading' : node.parent.type,
-              label: text,
-              line_span: { start: line, end: endLine }
-            });
-          }
-        } else if (capName === 'tag' || capName === 'tag.builtin') {
-          const elem = node.parent?.parent || node.parent;
-          if (elem) {
-            for (const child of elem.children || []) {
-              if (child.type.includes('text')) {
-                const txt = child.text.trim();
-                if (txt) {
-                  literals.push({
-                    text: txt,
-                    line: child.startPosition.row + 1,
-                    endLine: child.endPosition.row + 1
-                  });
-                }
-              }
-            }
-          }
         }
       }
     }
@@ -416,9 +580,6 @@ export async function indexFileCst(fileEntry) {
       const symStrings = [
         ...new Set(literals.filter(l => isDirectLine(l.line) && l.endLine <= sym.endLine).map(l => l.text))
       ];
-      const symLandmarks = landmarks.filter(
-        lm => isDirectLine(lm.line_span.start) && lm.line_span.end <= sym.endLine
-      );
 
       symbolNodes.push({
         cadastral_id: coordId,
@@ -432,8 +593,7 @@ export async function indexFileCst(fileEntry) {
         parent_id: fileCoordId,
         calls: symCalls,
         referenced_types: symTypes,
-        literals: symStrings,
-        internal_landmarks: symLandmarks
+        literals: symStrings
       });
     }
 
@@ -451,8 +611,7 @@ export async function indexFileCst(fileEntry) {
       imports_line_span: imports.length > 0 ? { start: minImportLine, end: maxImportLine } : null,
       calls: [...new Set(calls.map(c => c.name))],
       referenced_types: [...new Set(referencedTypes.map(t => t.name))],
-      literals: [...new Set(literals.map(l => l.text))],
-      internal_landmarks: landmarks
+      literals: [...new Set(literals.map(l => l.text))]
     };
 
     return { fileNode, symbolNodes };

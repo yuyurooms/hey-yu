@@ -1,95 +1,58 @@
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import pathe from 'pathe';
 import { create, insertMultiple, search } from '@orama/orama';
 import { walkWorkspaceFiles } from './workspace_walker.js';
-import { indexFileCst } from './cst_indexer.js';
+import { initCstRuntime, indexFileCst, createCadastralId } from './cst_indexer.js';
 import { buildCoordinateGraph, extractCoordDependencies } from './coord_graph.js';
 
-const STOP_FRAGMENTS = new Set([
-  'get', 'set', 'log', 'run', 'use', 'on', 'to', 'in', 'of', 'by', 'is', 'do', 'fn', 'id',
-  'app', 'src', 'mvp', 'lib', 'pkg', 'cmd', 'api', 'the', 'for', 'and', 'with', 'from'
-]);
+const ENGINE_ROOT = pathe.resolve(pathe.dirname(fileURLToPath(import.meta.url)), '..');
+export const CENTRAL_COORD_ROOT = pathe.join(ENGINE_ROOT, '.coordinate');
+
+function sanitizeProjectSlug(name) {
+  const s = String(name || 'project');
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    const isSafe =
+      (ch >= 'a' && ch <= 'z') ||
+      (ch >= 'A' && ch <= 'Z') ||
+      (ch >= '0' && ch <= '9') ||
+      ch === '_' ||
+      ch === '-';
+    out += isSafe ? ch : '_';
+  }
+  return out || 'project';
+}
+
+export async function resolveProjectStorageDir(projectRoot) {
+  await initCstRuntime();
+  const canonicalRoot = pathe.normalize(pathe.resolve(projectRoot || process.cwd()));
+  const hashHex = createCadastralId(canonicalRoot).slice(4);
+  const slug = sanitizeProjectSlug(pathe.basename(canonicalRoot));
+  return pathe.join(CENTRAL_COORD_ROOT, 'projects', `${slug}_${hashHex}`);
+}
 
 function splitIdentifierWords(text) {
-  return String(text || '')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_\-./:\\]+/g, ' ')
-    .trim();
-}
-
-function extractWholeWordSet(text) {
-  const words = splitIdentifierWords(text)
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-  return new Set(words);
-}
-
-function doesDocumentMatchQuery(doc, rawQuery, projectRoot) {
-  const qClean = String(rawQuery || '').trim();
-  if (!qClean) return false;
-  const qLower = qClean.toLowerCase();
-
-  const rootBase = pathe.basename(projectRoot || '').toLowerCase();
-  if (rootBase.length >= 3 && qLower.includes(rootBase)) {
-    return true;
-  }
-
-  const docNameLower = String(doc.name || '').toLowerCase();
-  const docFileLower = String(doc.origin_file || '').toLowerCase();
-  const docLiteralsLower = String(doc.literals || '').toLowerCase();
-  const docCallsLower = String(doc.calls || '').toLowerCase();
-  const docTypesLower = String(doc.referenced_types || '').toLowerCase();
-
-  if (
-    docNameLower.includes(qLower) ||
-    docFileLower.includes(qLower) ||
-    docLiteralsLower.includes(qLower) ||
-    docCallsLower.includes(qLower) ||
-    docTypesLower.includes(qLower)
-  ) {
-    return true;
-  }
-
-  const queryWords = splitIdentifierWords(qClean)
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(w => w.length >= 2 && !/^\d+$/.test(w));
-
-  if (queryWords.length === 0) return false;
-
-  const docWords = extractWholeWordSet(
-    `${doc.name || ''} ${doc.name_words || ''} ${doc.origin_file || ''} ${doc.file_words || ''} ${doc.literals || ''} ${doc.calls || ''} ${doc.referenced_types || ''}`
-  );
-
-  const wordMatchesDoc = qw => {
-    if (docWords.has(qw)) return true;
-    if (qw.length >= 4) {
-      for (const dw of docWords) {
-        if (dw.startsWith(qw) || qw.startsWith(dw) && dw.length >= 4) return true;
-      }
+  const s = String(text || '');
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '_' || ch === '-' || ch === '.' || ch === '/' || ch === ':' || ch === '\\') {
+      out += ' ';
+      continue;
     }
-    return false;
-  };
-
-  let matchedCount = 0;
-  let matchedStrongCount = 0;
-  for (const qw of queryWords) {
-    if (wordMatchesDoc(qw)) {
-      matchedCount++;
-      if (!STOP_FRAGMENTS.has(qw)) {
-        matchedStrongCount++;
-      }
+    const isUpper = ch !== ch.toLowerCase() && ch === ch.toUpperCase();
+    if (i > 0 && isUpper) {
+      const prev = s[i - 1];
+      const prevIsLowerOrDigit =
+        (prev !== prev.toUpperCase() && prev === prev.toLowerCase()) ||
+        (prev >= '0' && prev <= '9');
+      if (prevIsLowerOrDigit) out += ' ';
     }
+    out += ch;
   }
-
-  if (matchedStrongCount === 0) return false;
-  if (queryWords.length === 1) return matchedStrongCount >= 1;
-  if (queryWords.length === 2) {
-    const strongWords = queryWords.filter(w => !STOP_FRAGMENTS.has(w));
-    return matchedCount >= 2 || (strongWords.length === 1 && matchedStrongCount === 1 && !qClean.includes('_'));
-  }
-  return matchedCount >= Math.ceil(queryWords.length * 0.6);
+  return out.trim();
 }
 
 function formatStatusLine(target, deps, relatedCoords, elapsedMs) {
@@ -132,8 +95,10 @@ function formatStatusLine(target, deps, relatedCoords, elapsedMs) {
 
 export class CoordinateResolver {
   constructor(projectRoot) {
-    this.projectRoot = pathe.resolve(projectRoot || process.cwd());
-    this.cacheFilePath = pathe.join(this.projectRoot, '.coordinate', 'ast_cache.json');
+    this.projectRoot = pathe.normalize(pathe.resolve(projectRoot || process.cwd()));
+    this.storageDir = null;
+    this.cacheFilePath = null;
+    this.cacheDiskMtimeMs = 0;
     this.indexedFileMap = new Map();
     this.graphState = null;
     this.oramaDb = null;
@@ -141,31 +106,41 @@ export class CoordinateResolver {
 
   _loadDiskAstCache() {
     try {
-      if (!fs.existsSync(this.cacheFilePath)) return;
+      if (!this.cacheFilePath || !fs.existsSync(this.cacheFilePath)) return;
+      const stat = fs.statSync(this.cacheFilePath);
       const raw = JSON.parse(fs.readFileSync(this.cacheFilePath, 'utf8'));
-      if (raw?.version !== '0.1.0-alpha') return;
+      if (raw?.version !== '0.1.0-alpha' || raw?.project_root !== this.projectRoot) return;
       const entries = raw?.entries || {};
+      this.indexedFileMap.clear();
       for (const [relPath, item] of Object.entries(entries)) {
         if (item?.statKey && item?.parsed?.fileNode) {
           this.indexedFileMap.set(relPath, { statKey: item.statKey, parsed: item.parsed });
         }
       }
+      this.cacheDiskMtimeMs = stat.mtimeMs;
     } catch (_) {}
   }
 
   _saveDiskAstCache() {
     try {
+      if (!this.cacheFilePath) return;
+      fs.mkdirSync(CENTRAL_COORD_ROOT, { recursive: true });
+      const rootGitignore = pathe.join(CENTRAL_COORD_ROOT, '.gitignore');
+      if (!fs.existsSync(rootGitignore)) {
+        fs.writeFileSync(rootGitignore, '*\n', 'utf8');
+      }
       const coordDir = pathe.dirname(this.cacheFilePath);
       fs.mkdirSync(coordDir, { recursive: true });
-      const coordGitignore = pathe.join(coordDir, '.gitignore');
-      if (!fs.existsSync(coordGitignore)) {
-        fs.writeFileSync(coordGitignore, '*\n', 'utf8');
-      }
       const entries = {};
       for (const [relPath, item] of this.indexedFileMap.entries()) {
         entries[relPath] = item;
       }
-      fs.writeFileSync(this.cacheFilePath, JSON.stringify({ version: '0.1.0-alpha', entries }), 'utf8');
+      fs.writeFileSync(
+        this.cacheFilePath,
+        JSON.stringify({ version: '0.1.0-alpha', project_root: this.projectRoot, entries }),
+        'utf8'
+      );
+      this.cacheDiskMtimeMs = fs.statSync(this.cacheFilePath).mtimeMs;
     } catch (_) {}
   }
 
@@ -187,23 +162,34 @@ export class CoordinateResolver {
         language: 'string',
         literals: 'string',
         calls: 'string',
-        referenced_types: 'string'
+        referenced_types: 'string',
+        combined_tokens: 'string'
       }
     });
 
     const docs = [];
     for (const node of this.graphState.nodesById.values()) {
+      const parsedOrigin = pathe.parse(node.origin_file || '');
+      const originWithoutExt = pathe.join(parsedOrigin.dir, parsedOrigin.name);
+      const nameWords = splitIdentifierWords(node.name);
+      const fileWords = splitIdentifierWords(originWithoutExt);
+      const literalsStr = (node.literals || []).join(' ');
+      const callsStr = (node.calls || []).join(' ');
+      const refTypesStr = (node.referenced_types || []).join(' ');
       docs.push({
         cadastral_id: node.cadastral_id,
         name: node.name || '',
-        name_words: splitIdentifierWords(node.name),
+        name_words: nameWords,
         kind: node.kind || '',
         origin_file: node.origin_file || '',
-        file_words: splitIdentifierWords(node.origin_file),
+        file_words: fileWords,
         language: node.language || '',
-        literals: (node.literals || []).join(' '),
-        calls: (node.calls || []).join(' '),
-        referenced_types: (node.referenced_types || []).join(' ')
+        literals: literalsStr,
+        calls: callsStr,
+        referenced_types: refTypesStr,
+        combined_tokens: [nameWords, fileWords, literalsStr, callsStr, refTypesStr]
+          .filter(Boolean)
+          .join(' ')
       });
     }
 
@@ -217,9 +203,23 @@ export class CoordinateResolver {
    * with live filesystem changes via `statKey` (`mtimeMs:size`).
    */
   async sync() {
+    if (!this.cacheFilePath) {
+      this.storageDir = await resolveProjectStorageDir(this.projectRoot);
+      this.cacheFilePath = pathe.join(this.storageDir, 'ast_cache.json');
+    }
+    let changed = false;
+    try {
+      if (fs.existsSync(this.cacheFilePath)) {
+        const diskMtime = fs.statSync(this.cacheFilePath).mtimeMs;
+        if (diskMtime > this.cacheDiskMtimeMs) {
+          this._loadDiskAstCache();
+          changed = true;
+        }
+      }
+    } catch (_) {}
+
     const files = await walkWorkspaceFiles(this.projectRoot);
     const seenRelPaths = new Set();
-    let changed = false;
 
     for (const fileEntry of files) {
       seenRelPaths.add(fileEntry.relPath);
@@ -254,6 +254,8 @@ export class CoordinateResolver {
   }
 
   async init() {
+    this.storageDir = await resolveProjectStorageDir(this.projectRoot);
+    this.cacheFilePath = pathe.join(this.storageDir, 'ast_cache.json');
     this._loadDiskAstCache();
     await this.sync();
     return this;
@@ -266,8 +268,7 @@ export class CoordinateResolver {
     const { file, line, query, semantic_tokens, expected_kind } = params;
 
     if (file) {
-      const relFile = pathe.isAbsolute(file) ? pathe.relative(this.projectRoot, file) : pathe.normalize(file);
-      const cleanRel = relFile.replace(/^\.\//, '');
+      const cleanRel = pathe.relative(this.projectRoot, pathe.resolve(this.projectRoot, file));
       let fileNode = this.graphState.fileByRelPath.get(cleanRel);
       if (!fileNode) {
         for (const [indexedRel, candidateNode] of this.graphState.fileByRelPath.entries()) {
@@ -299,17 +300,7 @@ export class CoordinateResolver {
     }
 
     const rawQuery = String(query || '').trim();
-    const extraTokens = Array.isArray(semantic_tokens) ? semantic_tokens.join(' ') : '';
-    const allInput = `${rawQuery} ${extraTokens}`.trim();
-    const uniqueWords = [
-      ...new Set(
-        `${allInput} ${splitIdentifierWords(allInput)}`
-          .split(/\s+/)
-          .filter(w => w && (w.length >= 2 || !/^\d+$/.test(w)) && !/^\d+$/.test(w))
-      )
-    ];
-    const combinedTerm = uniqueWords.join(' ');
-    if (!combinedTerm || !rawQuery) {
+    if (!rawQuery) {
       return { pass: true, resolution_status: 'PASS' };
     }
 
@@ -323,69 +314,102 @@ export class CoordinateResolver {
         : { pass: true, resolution_status: 'PASS' };
     };
 
-    const searchResult = await search(this.oramaDb, {
-      term: combinedTerm,
-      properties: [
-        'name',
-        'name_words',
-        'literals',
-        'origin_file',
-        'file_words',
-        'referenced_types',
-        'calls'
-      ],
-      boost: {
-        name: 8,
-        name_words: 6,
-        literals: 5,
-        origin_file: 4,
-        file_words: 3,
-        referenced_types: 2,
-        calls: 1
-      }
+    const oramaProps = [
+      'name',
+      'name_words',
+      'literals',
+      'origin_file',
+      'file_words',
+      'referenced_types',
+      'calls',
+      'combined_tokens'
+    ];
+    const oramaBoost = {
+      name: 8,
+      name_words: 6,
+      literals: 5,
+      origin_file: 4,
+      file_words: 3,
+      referenced_types: 2,
+      combined_tokens: 2,
+      calls: 1
+    };
+
+    let searchResult = await search(this.oramaDb, {
+      term: rawQuery,
+      properties: oramaProps,
+      boost: oramaBoost,
+      threshold: 0
     });
 
     if (!searchResult.hits || searchResult.hits.length === 0) {
-      return buildPassResult();
+      const splitQuery = splitIdentifierWords(rawQuery);
+      if (splitQuery && splitQuery !== rawQuery) {
+        searchResult = await search(this.oramaDb, {
+          term: splitQuery,
+          properties: oramaProps,
+          boost: oramaBoost,
+          threshold: 0
+        });
+      }
     }
 
-    const validHits = searchResult.hits.filter(hit =>
-      doesDocumentMatchQuery(hit.document, rawQuery, this.projectRoot)
-    );
+    if ((!searchResult.hits || searchResult.hits.length === 0) && Array.isArray(semantic_tokens) && semantic_tokens.length > 0) {
+      const semTerm = semantic_tokens.filter(Boolean).join(' ').trim();
+      if (semTerm) {
+        searchResult = await search(this.oramaDb, {
+          term: semTerm,
+          properties: oramaProps,
+          boost: oramaBoost,
+          threshold: 0
+        });
+      }
+    }
+
+    const validHits = [...(searchResult.hits || [])];
     if (validHits.length === 0) {
       return buildPassResult();
     }
 
     const qLower = rawQuery.toLowerCase();
     const kindHint = expected_kind ? String(expected_kind).toLowerCase() : null;
-    const bestHit =
-      validHits.find(hit => hit.document.name.toLowerCase() === qLower && hit.document.kind !== 'file') ||
-      (kindHint && validHits.find(hit => hit.document.kind === kindHint)) ||
-      validHits.find(hit => hit.document.kind !== 'file') ||
-      validHits[0];
+    const rankHit = hit => {
+      const doc = hit.document;
+      const id = doc.cadastral_id;
+      const degree = this.graphState.graph.hasNode(id) ? this.graphState.graph.degree(id) : 0;
+      return (
+        hit.score +
+        (doc.name.toLowerCase() === qLower ? 50 : 0) +
+        (kindHint && doc.kind === kindHint ? 20 : 0) +
+        (doc.kind !== 'file' ? 5 : 0) +
+        Math.min(degree, 10) * 0.5
+      );
+    };
+    validHits.sort((a, b) => rankHit(b) - rankHit(a));
 
+    const bestHit = validHits[0];
     const target = this.graphState.nodesById.get(bestHit.document.cadastral_id);
     if (!target) {
       return buildPassResult();
     }
 
-    return this._buildFoundResponse(target, t0, validHits);
-  }
-
-  _extractCodePreview(relFile, lineSpan, maxLines = 35) {
-    try {
-      const absPath = pathe.join(this.projectRoot, relFile);
-      if (!fs.existsSync(absPath)) return undefined;
-      const lines = fs.readFileSync(absPath, 'utf8').split(/\r?\n/);
-      const startIdx = Math.max(0, (lineSpan?.start || 1) - 1);
-      const endIdx = Math.min(lines.length, startIdx + maxLines, lineSpan?.end || lines.length);
-      return lines
-        .slice(startIdx, endIdx)
-        .map((text, idx) => `${startIdx + idx + 1}: ${text}`)
-        .join('\n');
-    } catch (_) {
-      return undefined;
+    if (Array.isArray(semantic_tokens) && semantic_tokens.length > 0) {
+      const semResult = await search(this.oramaDb, {
+        term: semantic_tokens.join(' '),
+        properties: oramaProps,
+        boost: oramaBoost,
+        threshold: 1
+      });
+      const seenIds = new Set(validHits.map(h => h.document.cadastral_id));
+      for (const h of semResult.hits || []) {
+        if (!seenIds.has(h.document.cadastral_id)) {
+          seenIds.add(h.document.cadastral_id);
+          validHits.push(h);
+        }
+      }
     }
+
+    return this._buildFoundResponse(target, t0, validHits);
   }
 
   _buildFoundResponse(target, t0, hits = []) {
@@ -415,7 +439,6 @@ export class CoordinateResolver {
     });
 
     const elapsedMs = Number((performance.now() - t0).toFixed(2));
-    const codePreview = target.kind !== 'file' ? this._extractCodePreview(target.origin_file, target.line_span) : undefined;
     const fileSymbols =
       target.kind === 'file' && Array.isArray(target.children)
         ? target.children
@@ -447,6 +470,7 @@ export class CoordinateResolver {
       pass: false,
       resolution_status: 'EXISTING_FOUND',
       cadastral_id: target.cadastral_id,
+      merkle_hash: target.merkle_hash,
       kind: target.kind,
       name: target.name,
       language: target.language,
@@ -455,7 +479,6 @@ export class CoordinateResolver {
       line_span: target.line_span,
       compact_chain: compactChain,
       ...(fileUnresolved.length > 0 ? { unresolved_imports: fileUnresolved } : {}),
-      ...(codePreview ? { code_preview: codePreview } : {}),
       ...(fileSymbols && fileSymbols.length > 0 ? { file_symbols: fileSymbols } : {}),
       coordinate_dispatcher: {
         required_file_spans: deps.coordinate_dispatcher.required_file_spans.slice(0, 10).map(s => ({
@@ -545,13 +568,13 @@ export class CoordinateResolver {
     }
     rankedNodes.sort((a, b) => b.score - a.score);
 
-    const seenHubFiles = new Set();
+    const seenHubFileCounts = new Map();
     const hubNodes = [];
     for (const item of rankedNodes) {
       if (hubNodes.length >= 12) break;
-      const fileCount = [...seenHubFiles].filter(f => f === item.node.origin_file).length;
+      const fileCount = seenHubFileCounts.get(item.node.origin_file) || 0;
       if (fileCount >= 2 && rankedNodes.length > 12) continue;
-      seenHubFiles.add(item.node.origin_file);
+      seenHubFileCounts.set(item.node.origin_file, fileCount + 1);
       hubNodes.push(item);
     }
 
@@ -591,7 +614,7 @@ export class CoordinateResolver {
       resolution_time_ms: elapsedMs,
       user_status_line: userStatusLine,
       next_step_hint:
-        'Call hey_yu({ query: "<symbol, route, table, or file>" }) to resolve exact coordinates, line_span, code_preview, and dependency spans.'
+        'Call hey_yu({ query: "<symbol, route, table, or file>", project_root: "<project_root>" }) to dispatch exact coordinates, line_span, coordinate_dispatcher.required_file_spans, and impact_graph.'
     };
   }
 }

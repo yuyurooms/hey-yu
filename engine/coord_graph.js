@@ -5,29 +5,24 @@ import { bfsFromNode } from 'graphology-traversal';
 import { ResolverFactory } from 'oxc-resolver';
 import { availableLanguages } from '@lumis-sh/lumis';
 
+const KNOWN_EXTENSIONS = [
+  ...new Set(
+    Object.values(availableLanguages())
+      .flatMap(lang => lang.extensions || [])
+      .filter(ext => ext.startsWith('*.'))
+      .map(ext => ext.slice(1).toLowerCase())
+  )
+];
+const KNOWN_EXTENSION_SET = new Set(KNOWN_EXTENSIONS);
+
 function createModuleResolverPool(projectRoot) {
   const root = pathe.resolve(projectRoot);
-  const extensions = [
-    ...new Set([
-      ...Object.values(availableLanguages())
-        .flatMap(lang => lang.extensions || [])
-        .filter(ext => ext.startsWith('*.'))
-        .map(ext => ext.slice(1)),
-      '.json',
-      '.css',
-      '.scss',
-      '.sass',
-      '.less',
-      '.svg'
-    ])
-  ];
-
   const cache = new Map();
 
   function getResolverForConfig(tsconfigPath) {
     const key = tsconfigPath || '__default__';
     if (!cache.has(key)) {
-      const options = { extensions };
+      const options = { extensions: KNOWN_EXTENSIONS };
       if (tsconfigPath && fs.existsSync(tsconfigPath)) {
         options.tsconfig = { configFile: tsconfigPath, references: 'auto' };
       }
@@ -54,7 +49,9 @@ function createModuleResolverPool(projectRoot) {
 
 function stripExt(relPath) {
   const ext = pathe.extname(relPath);
-  return ext ? relPath.slice(0, -ext.length) : relPath;
+  return ext && KNOWN_EXTENSION_SET.has(ext.toLowerCase())
+    ? relPath.slice(0, -ext.length)
+    : relPath;
 }
 
 function resolveImportTargetRelPaths(
@@ -66,73 +63,64 @@ function resolveImportTargetRelPaths(
   filesByStemSuffix,
   filesByDirSuffix
 ) {
-  if (!rawSpecifier) return [];
+  if (!rawSpecifier) return { targets: [], existsOnDisk: false };
   const root = pathe.resolve(projectRoot);
   const fromAbsPath = pathe.join(root, fromRelPath);
   const fromDir = pathe.dirname(fromAbsPath);
+  let existsOnDisk = false;
 
   // 1. Primary resolution via oxc-resolver
   try {
     const res = resolver.resolveFileSync(fromAbsPath, rawSpecifier);
     if (res?.path) {
+      existsOnDisk = true;
       const rel = pathe.relative(root, res.path);
-      if (fileByRelPath.has(rel)) return [rel];
+      if (fileByRelPath.has(rel)) return { targets: [rel], existsOnDisk: true };
     }
   } catch (_) {}
 
   try {
     const resRoot = resolver.sync(fromDir, rawSpecifier);
     if (resRoot?.path) {
+      existsOnDisk = true;
       const rel = pathe.relative(root, resRoot.path);
-      if (fileByRelPath.has(rel)) return [rel];
+      if (fileByRelPath.has(rel)) return { targets: [rel], existsOnDisk: true };
     }
   } catch (_) {}
 
-  // 2. Universal pathe suffix resolution across indexed workspace files (Go, Rust, Python, Java, C/C++)
-  const slashSpec = rawSpecifier.replaceAll('::', '/');
-  const normPath = slashSpec.includes('/') ? pathe.normalize(slashSpec) : pathe.normalize(slashSpec.replaceAll('.', '/'));
+  // 2. Universal pathe stem & suffix resolution across all indexed languages
+  const withoutScheme =
+    rawSpecifier.includes(':') && !rawSpecifier.includes('::')
+      ? rawSpecifier.slice(rawSpecifier.indexOf(':') + 1)
+      : rawSpecifier;
+  const cleanSpec = stripExt(withoutScheme);
+  if (cleanSpec.startsWith('.')) {
+    const relStem = pathe.join(pathe.dirname(fromRelPath), cleanSpec);
+    const relMatches = (filesByStemSuffix.get(relStem) || []).filter(f => f !== fromRelPath);
+    if (relMatches.length > 0) return { targets: relMatches, existsOnDisk: true };
+  }
+
+  const slashSpec = pathe.normalize(cleanSpec.replaceAll('::', '/'));
+  const normPath = slashSpec.includes('/') ? slashSpec : pathe.normalize(slashSpec.replaceAll('.', '/'));
   const segments = normPath.split('/').filter(s => s && s !== '.' && s !== '..');
-  if (segments.length === 0) return [];
+  if (segments.length === 0) return { targets: [], existsOnDisk };
 
   for (let start = 0; start < segments.length; start++) {
     const candidate = segments.slice(start).join('/');
     const stemMatches = (filesByStemSuffix.get(candidate) || []).filter(f => f !== fromRelPath);
-    if (stemMatches.length > 0) return stemMatches;
+    if (stemMatches.length > 0) return { targets: stemMatches, existsOnDisk: true };
 
     const dirMatches = (filesByDirSuffix.get(candidate) || []).filter(f => f !== fromRelPath);
-    if (dirMatches.length > 0) return dirMatches;
+    if (dirMatches.length > 0) return { targets: dirMatches, existsOnDisk: true };
 
     if (segments.length - start >= 2) {
       const candidateParent = segments.slice(start, -1).join('/');
       const parentStemMatches = (filesByStemSuffix.get(candidateParent) || []).filter(f => f !== fromRelPath);
-      if (parentStemMatches.length > 0) return parentStemMatches;
+      if (parentStemMatches.length > 0) return { targets: parentStemMatches, existsOnDisk: true };
     }
   }
 
-  return [];
-}
-
-function isLocalOrAliasImport(spec) {
-  if (!spec || typeof spec !== 'string') return false;
-  return (
-    spec.startsWith('./') ||
-    spec.startsWith('../') ||
-    spec.startsWith('@/') ||
-    spec.startsWith('~/')
-  );
-}
-
-function doesRawImportExistOnDisk(resolver, projectRoot, fromRelPath, rawSpecifier) {
-  try {
-    const root = pathe.resolve(projectRoot);
-    const fromAbsPath = pathe.join(root, fromRelPath);
-    const fromDir = pathe.dirname(fromAbsPath);
-    const res1 = resolver.resolveFileSync(fromAbsPath, rawSpecifier);
-    if (res1?.path && fs.existsSync(res1.path)) return true;
-    const res2 = resolver.sync(fromDir, rawSpecifier);
-    if (res2?.path && fs.existsSync(res2.path)) return true;
-  } catch (_) {}
-  return false;
+  return { targets: [], existsOnDisk };
 }
 
 /**
@@ -205,7 +193,7 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
 
     const fileResolver = getResolverForFile(fileNode.origin_file);
     for (const imp of fileNode.imports || []) {
-      const targetRels = resolveImportTargetRelPaths(
+      const { targets: targetRels, existsOnDisk } = resolveImportTargetRelPaths(
         fileResolver,
         root,
         fileNode.origin_file,
@@ -216,8 +204,8 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
       );
       if (
         targetRels.length === 0 &&
-        isLocalOrAliasImport(imp.from) &&
-        !doesRawImportExistOnDisk(fileResolver, root, fileNode.origin_file, imp.from)
+        !existsOnDisk &&
+        (imp.from.startsWith('./') || imp.from.startsWith('../'))
       ) {
         const symPart = imp.symbols && imp.symbols.length > 0 ? ` (${imp.symbols.join(', ')})` : '';
         const entryStr = `${fileNode.origin_file}:${imp.line} -> ${imp.from}${symPart}`;
@@ -287,7 +275,7 @@ export function buildCoordinateGraph(projectRoot, indexedFiles) {
     }
   }
 
-  return { graph, nodesById, fileByRelPath, symbolsByFile, filesByDir, unresolvedImports };
+  return { graph, nodesById, fileByRelPath, unresolvedImports };
 }
 
 /**
@@ -301,10 +289,8 @@ export function extractCoordDependencies(graphState, coordId) {
   const callers = [];
   const callees = [];
   const sharedTypes = [];
-  const dispatcherEdges = [];
   const requiredSpans = [];
   const seenSpans = new Set();
-  const seenEdgeKeys = new Set();
 
   const addSpan = (file, line_span, cadastral_id, role, name) => {
     if (!file || !line_span) return;
@@ -312,19 +298,6 @@ export function extractCoordDependencies(graphState, coordId) {
     if (seenSpans.has(key)) return;
     seenSpans.add(key);
     requiredSpans.push({ file, line_span, cadastral_id, role, name });
-  };
-
-  const addDispatcherEdge = (from, to, relation, dstNode) => {
-    const key = `${from}->${to}:${relation}`;
-    if (seenEdgeKeys.has(key)) return;
-    seenEdgeKeys.add(key);
-    dispatcherEdges.push({
-      from,
-      to,
-      relation,
-      target_file: dstNode.origin_file,
-      target_line_span: dstNode.line_span
-    });
   };
 
   addSpan(target.origin_file, target.line_span, target.cadastral_id, 'target', target.name);
@@ -362,7 +335,6 @@ export function extractCoordDependencies(graphState, coordId) {
               file: src.origin_file,
               line_span: src.line_span
             });
-            addDispatcherEdge(src.cadastral_id, toId, edgeAttr.relation, src);
             addSpan(src.origin_file, src.line_span, src.cadastral_id, 'caller', src.name);
           }
         });
@@ -416,7 +388,6 @@ export function extractCoordDependencies(graphState, coordId) {
                 file: dst.origin_file,
                 line_span: dst.line_span
               });
-              addDispatcherEdge(fromId, dst.cadastral_id, 'USES_TYPE', dst);
               addSpan(dst.origin_file, dst.line_span, dst.cadastral_id, 'type', dst.name);
             }
           } else {
@@ -429,7 +400,6 @@ export function extractCoordDependencies(graphState, coordId) {
                 file: dst.origin_file,
                 line_span: dst.line_span
               });
-              addDispatcherEdge(fromId, dst.cadastral_id, rel, dst);
               addSpan(dst.origin_file, dst.line_span, dst.cadastral_id, 'callee', dst.name);
             }
           }
@@ -450,13 +420,6 @@ export function extractCoordDependencies(graphState, coordId) {
       }
     },
     coordinate_dispatcher: {
-      primary_coordinate: {
-        cadastral_id: target.cadastral_id,
-        file: target.origin_file,
-        line_span: target.line_span,
-        merkle_hash: target.merkle_hash
-      },
-      edges: dispatcherEdges,
       required_file_spans: requiredSpans
     },
     dependency_summary: {
