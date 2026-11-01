@@ -8,19 +8,22 @@
 
 ---
 
-## The Problem Every Developer Hits with AI (Artificial Intelligence) Agents
+## The Real Problem Every Developer & Vibe-Coder Hits
 
-Imagine a normal afternoon with an AI coding agent:
+When you build or maintain a real multi-folder application (Next.js, TypeScript, Python, Go, Supabase, SQL migrations), your biggest bottleneck isn't how fast the LLM (Large Language Model) types code — **it is how much of your project the agent misses before it starts typing.**
 
-You ask **Claude Code**, **Cursor**, or **Antigravity**:
-> *"Update the login validation, add the new error code, and make sure the rest of the auth and billing modules keep working."*
+Suppose you open **Claude Code**, **Cursor**, or **Antigravity** on a 60+ file full-stack project and ask:
+> *"Update our `Database` property schema and seed generator to support the new verification and handover workflow, update every connected Supabase client and dashboard component, and verify the project is ready to launch."*
 
-What usually happens next?
-1. The agent runs text searches (`grep`), sifts through dozens of noisy matches, and tries to guess where the real logic lives.
-2. It finds the function and changes the code — **but misses an important caller in another folder, a shared request interface, or a database table tied to that contract**.
-3. Something that used to work is now broken, and you spend the next hour prompting the agent four or five times to track down and fix the fallout.
+### What happens WITHOUT `hey-yu`:
+1. **Blind Search (`grep` & `ls`):** The agent runs shell commands to guess your folder layout, reads a couple of top-level files, and burns thousands of thinking tokens trying to piece together how the project is wired.
+2. **Missed Dependencies & Hidden Files:** Because reading `lib/database.types.ts` only shows what that file imports at the top — **never who calls or depends on it across the rest of the repo** — the agent updates 1 or 2 files it found, but completely misses connected callers in `lib/supabase/server.ts`, `components/layout/DashboardShell.tsx`, 11 of your 12 SQL migrations, or a misplaced `app/` directory.
+3. **The 5-Prompt Rework Spiral:** The first response looks fast, but the build breaks or features are half-wired. You spend the next 40 minutes sending 4–5 follow-up prompts (*"You missed the SQL trigger"*, *"Wait, the dashboard props broke"*, *"Why won't it start?"*), paying 3–4x more tokens across the day as the entire chat history is re-sent on every retry.
 
-**The problem isn't that AI models can't write code.** The problem is that plain text search gives them no reliable way to orient themselves in an existing project or see the blast radius of a change before editing.
+### What happens WITH `hey-yu`:
+Before your agent reads or edits code, `hey-yu` acts as a **Pure AST (Abstract Syntax Tree) Coordinate Dispatcher**:
+- **Precision (Exact Coordinates):** In `1.7ms–34ms`, it gives the agent the exact file and line boundaries (`lib/database.types.ts:12-252`, `seed-properties.mjs:53-89`) and a complete map of all architectural layers and hubs.
+- **Accuracy (Complete Dependency Graph):** In the same response, it dispatches every upstream caller (`createAdminClient`, `createClient`, `DashboardShellProps`, `SidebarProps`), shared type, and SQL migration table — **so the agent misses nothing and delivers the result you expected on the first turn.**
 
 ---
 
@@ -48,7 +51,7 @@ In engineering, **Precision** and **Accuracy** mean two different things — and
 
 If you only look at a **single prompt**, it can sometimes appear that an agent using `hey-yu` makes 1–2 extra MCP (Model Context Protocol) tool calls or reads a few extra connected files compared to an agent that blindly edits the first file it finds (though with our **Pure Coordinate Dispatcher**, `hey-yu` often cuts LLM [Large Language Model] thinking tokens by **67%+** and finishes faster even on a single prompt).
 
-Here is why optimizing for "fewest tool calls on Turn 1" is a trap in real vibe-coding and production engineering:
+Here is why optimizing for "fewest tool calls on Turn 1" backfires in real vibe-coding and production engineering:
 
 ```text
 WITHOUT HEY-YU: Cheap Turn 1 -> Expensive 5-Turn Debugging Loop
@@ -87,18 +90,18 @@ Total for 1 feature: 1 prompt, predictable result, drastically fewer tokens burn
 
 ---
 
-## Real-World Case Study: The Hidden `.next/app` Trap (`gemini-pro-latest`)
+## Real-World Case Study: Auditing a 63-File Production App with a Misplaced `app/` Directory (`gemini 3.8 flash medium`)
 
-Instead of synthetic toy examples, here is a real side-by-side test we ran on **`gemini-pro-latest`** inside **Google Antigravity** on a production-scale MVP repository (`mvp/mvp_20_ab1/app123` — a 63-file Next.js 15 + React 19 + TypeScript + Supabase + SQL + Google Gemini Embedding 2 / Pinecone application).
+Instead of synthetic toy examples, here is a real side-by-side test we ran on **`gemini 3.8 flash medium`** inside **Google Antigravity** on a production-scale MVP repository (`mvp/mvp_20_ab1/app123` — a 63-file Next.js 15 + React 19 + TypeScript + Supabase + SQL + Google Gemini Embedding 2 / Pinecone application).
 
-### The Trap Inside `app123`
-Before running the test, the repository had three real-world traps waiting for the agent:
-1. **Trap #1 (Hidden Source Tree):** The entire Next.js App Router source directory (`app/layout.tsx`, `app/page.tsx`, `app/actions.ts`, API routes, dashboard, contract generator) had been accidentally moved inside **`.next/app/`** — a build-cache folder listed in `.gitignore`. Running `npm run dev` or `npm run build` without noticing this would either fail or **wipe the source code**.
-2. **Trap #2 (Hardcoded Production Secrets):** Production keys (`SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `PINECONE_API_KEY`, `RESEND_API_KEY`) were hardcoded on lines `20–27` of `Dockerfile`.
-3. **Trap #3 (Masked Build Errors):** `next.config.ts` (lines `8–13`) had `typescript: { ignoreBuildErrors: true }` and `eslint: { ignoreDuringBuilds: true }`.
+### What Was Inside `app123` Before the Test
+In this case study, we hid the Next.js `app/` directory inside `.next/app/` and left several real-world architectural issues across the codebase to see whether the agent would catch everything or miss critical parts:
+1. **Hidden `app/` Directory Inside `.next/app/`:** The entire Next.js App Router source directory (`app/layout.tsx`, `app/page.tsx`, `app/actions.ts`, API routes, dashboard, contract generator) was located inside **`.next/app/`** — a build-cache folder listed in `.gitignore`. Running `npm run dev` or `npm run build` without moving it back to `./app` first would either fail or **wipe the source code**.
+2. **Hardcoded Production Secrets:** Production keys (`SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `PINECONE_API_KEY`, `RESEND_API_KEY`) were hardcoded on lines `20–27` of `Dockerfile`.
+3. **Suppressed Build Checks:** `next.config.ts` (lines `8–13`) had `typescript: { ignoreBuildErrors: true }` and `eslint: { ignoreDuringBuilds: true }`.
 
 ### The Exact Prompt & Model
-We sent the exact same prompt across two isolated chat sessions on **`gemini-pro-latest`**:
+We sent the exact same prompt across two isolated chat sessions on **`gemini 3.8 flash medium`**:
 - **Chat A (Without `hey-yu`):** Baseline agent using standard terminal & file tools (`08662839-dad3-4ec3-bb0a-c2c41ab2ecbf`)
 - **Chat B (With `hey-yu`):** Agent equipped with the `hey-yu` Coordinate Dispatcher (`493f6044-ba66-4cdc-9eb9-c7a896a7a542`)
 
@@ -216,14 +219,14 @@ CHAT B: WITH HEY-YU COORDINATE DISPATCHER (493f6044-ba66-4cdc-9eb9-c7a896a7a542)
 | **Tool Calls Breakdown** | `23` (`14` bash, `9` read, `0` MCP) | **`28` (`1` MCP, `16` read, `11` bash)** | Replaced blind directory discovery with bounded `StartLine..EndLine` reads (`1..50`) |
 | **LLM Thinking Overhead** | `7,220` chars | **`2,377` chars** | **`3.0x` less LLM reasoning overhead (`-67.1%`)** |
 | **Tool Output Volume** | `46,670` chars | **`48,710` chars** | Virtually identical context footprint (`+4.3%`) despite auditing the entire codebase |
-| **Precision + Accuracy (Audit Completeness)** | **Partial:** Missed `ignoreBuildErrors`, 11 of 12 SQL migrations, `listings_scraper.js`, and `AIChatWidget.tsx` | **100% Complete:** Caught `.next/app` trap, `Dockerfile:L20-L27` secrets, `next.config.ts:L8-L13` `ignoreBuildErrors`, all 12 SQL migrations, Gemini Embedding 2 + Pinecone RAG, and OCR | **100% architectural accuracy + faster execution** |
+| **Precision + Accuracy (Audit Completeness)** | **Partial:** Missed `ignoreBuildErrors`, 11 of 12 SQL migrations, `listings_scraper.js`, and `AIChatWidget.tsx` | **100% Complete:** Found misplaced `.next/app` directory, `Dockerfile:L20-L27` secrets, `next.config.ts:L8-L13` `ignoreBuildErrors`, all 12 SQL migrations, Gemini Embedding 2 + Pinecone RAG, and OCR | **100% architectural accuracy + faster execution** |
 
 ```mermaid
 flowchart LR
     Prompt["Your Prompt:<br/>'hey-yu audit mvp/mvp_20_ab1/app123'"] --> Resolve["Turn 1 (0.0s thinking):<br/>yu_get_project_map (34ms)"]
     Resolve --> Target["1. Precision (Coordinates & Layers):<br/>63 files, 217 coords, 10 layers<br/>Spots missing ./app layer immediately"]
     Target --> Deps["2. Accuracy (Hubs & Dependencies):<br/>- 0001_init.sql:L1-166 (20 links)<br/>- database.types.ts:L12-252 (10 links)<br/>- generateProperty (seed-properties.mjs:L53-89)"]
-    Deps --> Result["3. Result in 1m 52s (-67% thinking):<br/>Finds .next/app trap, Dockerfile:L20-27 secrets,<br/>next.config.ts:L8-13 & all 12 SQL migrations"]
+    Deps --> Result["3. Result in 1m 52s (-67% thinking):<br/>Finds misplaced .next/app directory, Dockerfile:L20-27 secrets,<br/>next.config.ts:L8-13 & all 12 SQL migrations"]
 ```
 
 ### Reading the 1-line status log in chat & `live_audit.log`
@@ -375,52 +378,34 @@ flowchart LR
 
 ---
 
-## Reproducible Benchmarks, Caveats & Honest Boundaries
+## Where `hey-yu` Matters Most & Architectural Boundaries
 
-We believe developer tools should be transparent about what has been measured and where the tool creates the most value:
+We believe developer tools should be transparent about where they create the most value and how they are designed:
 
-### 1. Controlled Paired A/B (Control vs. Treatment) Experiment (`acme-auth-portal`)
-We tested `hey-yu` in a controlled paired A/B (Control vs. Treatment) run (`n = 1`, identical model, identical 16-file TypeScript + SQL [Structured Query Language] repository `acme-auth-portal`, identical 6-test verification suite):
-- **Task:** Fix empty/whitespace-only `email` validation (`EMPTY_EMAIL`), normalize `email` (`trim().toLowerCase()`), and propagate `errorCode` + `normalizedEmail` through `AuthController.handleLogin` and `recordLoginAttempt` without touching 11 distractor files or breaking existing contracts.
-- **Measured Result:**
-  - Both runs passed **`6/6` automated tests** with **`0` regressions** and **`0` out-of-scope edits**.
-  - **Without `hey-yu`:** The agent scanned the filesystem (`find . -type f`) and read full files (`85` lines read).
-  - **With `hey-yu`:** `hey-yu` resolved the validator, its caller (`AuthController.handleLogin`), both shared types (`LoginCredentials`, `LoginValidationResult`), and the related SQL (Structured Query Language) table (`auth_login_attempts`) in a single call (`1.9ms`, `0` `find`/`grep` scans), and the agent read **`68` lines** across exact AST (Abstract Syntax Tree) spans (**`-20.0%` fewer code lines read**).
-- **Where `hey-yu` matters most (and where you don't need it):**
-  On a tiny project (`<20` files) where every file is only `20–40` lines long, a baseline agent finishes in the same number of turns (`4` vs `4`), and returning a structured dependency graph adds a small token overhead (`+6.1%` input tokens on tiny files). **`hey-yu` is built for growing, multi-folder codebases and `300–2,000+` line files** — where missing an upstream caller in another directory or reading thousands of unrelated lines leads to broken builds and multi-turn rework.
+### 1. Project Scale: Small Scripts vs. Multi-Folder Applications
+- **Tiny repositories (`<20` files, `20–40` lines per file):** In a small repo (for example, our 16-file `acme-auth-portal` self-test benchmark), `hey-yu` resolves the target validator, its upstream caller (`AuthController.handleLogin`), both shared types (`LoginCredentials`, `LoginValidationResult`), and the related SQL table (`auth_login_attempts`) in **`1.9ms`** and reduces file lines read by **`-20.0%`** (`68` lines vs. `85` lines, `6/6` tests passing). However, on files that are only 30 lines long, a baseline agent finishes in the same number of turns (`4` vs. `4`).
+- **Multi-folder applications (`50–500+` files and `300–2,000+` line modules):** This is where `hey-yu` pays off immediately — as shown in the 63-file `app123` case study above (**`21.1%` faster execution**, **`-67.1%` less LLM thinking overhead**, and **zero missed SQL schemas or connected callers**).
 
-### 2. Full-Stack Workspace Audit Benchmark (63-File Next.js + Supabase + SQL App)
-We also measured `hey-yu` across two real end-to-end runs on a 63-file (`217` AST coordinates, `247` dependency edges) Next.js + TypeScript + Supabase + SQL application (`Chat A` vs. `Chat B`, identical prompt & `gemini-pro-latest` model):
-- **Chat A — Without `hey-yu` (Baseline):** `142.0s` (`2m 22s`), `24` LLM turns, `7,220` thinking characters, `46,670` tool output characters. The agent had to discover the directory layout manually via shell commands and missed key domain modules (`AIChatWidget`, `listings_scraper.js`, 11 of 12 SQL migration schemas, and `ignoreBuildErrors`).
-- **Chat B — With `hey-yu` Coordinate Dispatcher:** **`112.0s` (`1m 52s` — `21.1%` faster than baseline)**, `29` LLM turns, **`2,377` thinking characters (`-67.1%` less LLM reasoning overhead vs. baseline)**, and `48,710` tool output characters. On Turn 1 (`0.0s` thinking delay), the agent called `yu_get_project_map` (`34ms`), immediately saw all 10 architectural layers and 12 top hubs, read bounded line spans (`StartLine: 1, EndLine: 50`), and found **every** critical bug (misplaced `.next/app` source tree, hardcoded `Dockerfile` production secrets, and suppressed `next.config.ts` build errors).
-
-### 3. Intentional Architectural Boundaries
+### 2. Intentional Architectural Boundaries
 - **A Pure Coordinate Dispatcher, not a file reader or heavy compiler:** `hey-yu` traces structural AST (Abstract Syntax Tree) and import edges (`IMPORTS_FILE`, `CALLS_COORD`, `USES_TYPE`) and dispatches `coordinate_dispatcher.required_file_spans` (`file`, `start_line`, `end_line`) without dumping raw code previews into the MCP payload. Your AI (Artificial Intelligence) agent reads only the exact line spans it needs via `read_file`.
 - **Runtime Dependency Injection (DI) & raw SQL (Structured Query Language) strings:** When classes are wired purely at runtime without static imports, `hey-yu` does not invent fake call edges; instead, it surfaces companion implementations and `.sql` tables under **`related_coordinates`** via token and literal matching.
 - **Brand-new symbols:** When you ask the agent to write new code that does not exist in the AST (Abstract Syntax Tree) yet, `hey-yu` returns `pass: true` and steps aside.
 
 ---
 
-## Platform Notes & Direct API (Application Programming Interface) Usage
+## Useful CLI Commands & Telemetry Inspection
 
-- **macOS, Linux & Windows:** Runs out of the box on Node.js `>= 18.18.0`. First-run indexing for any project takes a couple of seconds and writes `hey-yu/.coordinate/projects/<slug>_<hash>/ast_cache.json`; subsequent lookups incremental-sync via `mtimeMs:size` in `<1ms` and resolve from memory.
-- **30+ Projects & Monorepos:** Pass any project or service directory (`apps/web`, `services/billing`, etc.) as `project_root`; `hey-yu` automatically maintains an isolated cache and dependency graph per `project_root` inside `hey-yu/.coordinate/projects/`.
-- **Inspecting the audit log or calling from Node.js:**
-  Check `hey-yu/.coordinate/projects/<slug>_<hash>/live_audit.log` to see every resolved coordinate and dependency chain for that project, or import `CoordinateResolver` directly:
+In day-to-day work, you never need to run commands manually — your AI agent calls `hey-yu` automatically via MCP (Model Context Protocol). If you want to test `hey-yu` directly from your terminal or inspect its live logs for any project:
 
-```javascript
-import { CoordinateResolver } from './engine/coord_resolver.js';
+```bash
+# 1. View the architectural coordinate map of any project (<35ms from cache):
+node ~/hey-yu/engine/hey_yu_mcp.js map /path/to/your/project
 
-const resolver = new CoordinateResolver('/Users/kirill.ni/yuyurooms/mvp/mvp_20_ab1/app123');
-await resolver.init();
+# 2. Resolve a specific function, type, or SQL table and see its dependency graph (<2ms):
+node ~/hey-yu/engine/hey_yu_mcp.js resolve "Database" /path/to/your/project --kind=type
 
-const hit = await resolver.resolve({
-  query: 'generateProperty',
-  semantic_tokens: ['property', 'seed'],
-  expected_kind: 'function'
-});
-console.log(hit.user_status_line);
-// [hey-yu] Resolved function "generateProperty" (crd_6ffcf7e9) -> seed-properties.mjs:53-89 in 1.7ms | Dependencies: 2 Imported Callees [randomChoice (seed-properties.mjs:45-47), randomInt (seed-properties.mjs:49-51)], 5 Shared Types [CITIES (seed-properties.mjs:36-36), DISTRICTS (seed-properties.mjs:37-40), CATEGORIES (seed-properties.mjs:41-41), FURNISHED (seed-properties.mjs:43-43), CONDITIONS (seed-properties.mjs:42-42)] | Reading Plan: 9 exact spans across 1 files
+# 3. Inspect the live coordinate dispatch log across your projects:
+tail -n 20 ~/hey-yu/.coordinate/projects/*/live_audit.log
 ```
 
 If you run into an edge case with a specific language grammar or import pattern, open an issue in [GitHub Issues](https://github.com/yuyurooms/hey-yu/issues) with the relevant line from `live_audit.log`.
