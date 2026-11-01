@@ -434,9 +434,10 @@ function cleanHooksFile(hooksPath, cleanedPaths = []) {
   if (!fs.existsSync(hooksPath)) return;
   try {
     const agyHooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
-    if (agyHooks && (agyHooks['hey-yu'] || agyHooks['hey-yu-interceptor'])) {
+    if (agyHooks && (agyHooks['hey-yu'] || agyHooks['hey-yu-interceptor'] || agyHooks['hey-yu-lifecycle'])) {
       delete agyHooks['hey-yu'];
       delete agyHooks['hey-yu-interceptor'];
+      delete agyHooks['hey-yu-lifecycle'];
       if (Object.keys(agyHooks).length === 0) {
         fs.rmSync(hooksPath, { force: true });
       } else {
@@ -761,6 +762,7 @@ export async function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
   const projectStorageDir = await resolveProjectStorageDir(root);
   const removePaths = [
     pathe.join(root, '.agents', 'rules', 'hey-yu-rule.md'),
+    pathe.join(root, '.agents', 'scripts', 'hey-yu-lifecycle-hook.js'),
     pathe.join(root, '.cursor', 'rules', 'hey-yu.mdc'),
     pathe.join(root, '.agents', 'skills', 'hey-yu'),
     pathe.join(root, '.coordinate'),
@@ -780,6 +782,8 @@ export async function unprovisionWorkspace(targetRoot = defaultProjectRoot) {
   for (const dirName of [
     '.agents/rules',
     '.agents/skills',
+    '.agents/scripts',
+    '.agents/plugins',
     '.agents',
     '.cursor/rules',
     '.cursor',
